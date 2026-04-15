@@ -66,7 +66,9 @@ make ci                           # Run full CI pipeline locally
 │   ├── shared/            # Shared types (Message, ContentBlock interfaces)
 │   └── subprocess/        # Subprocess management and protocol adapter
 ├── examples/              # Usage examples (numbered by complexity)
-└── docs/architecture/     # Detailed architecture documentation
+└── docs/
+    ├── architecture/      # Detailed architecture documentation
+    └── tracking/          # Python SDK parity tracking (PR replay tracker)
 ```
 
 **Data Flow**:
@@ -102,6 +104,8 @@ make ci                           # Run full CI pipeline locally
 - **Table-driven tests**: Use for complex scenarios with multiple test cases
 - **Functional options**: `WithXxx()` pattern for configuration
 - **Benchmark tests**: Use `var sink any` to prevent dead code elimination, always call `b.ReportAllocs()` and `b.ResetTimer()`
+- **tool_use_result metadata**: `UserMessage.ToolUseResult` carries rich edit info (filePath, structuredPatch, diffs); check with `HasToolUseResult()` before accessing via `GetToolUseResult()`
+- **Init error routing**: `subprocess.routeInitError()` detects error `ResultMessage` arriving before transport is connected and calls `protocol.HandleControlInitErr()` to unblock `SendControlRequest()` via `initErrChan`
 
 <!-- END AUTO-MANAGED -->
 
@@ -111,9 +115,10 @@ make ci                           # Run full CI pipeline locally
 - Conventional commit messages: `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`
 - Issue references in commits: `(Issue #N)` or `(#N)`, use `Closes #N` in PR body
 - PR-based workflow with CI checks
-- Recent focus: Comprehensive benchmarking for performance-critical modules (Issue #74, commits e1c48f3, 368fa3e)
+- Recent focus: staticcheck SA5011 fix - add `return` after `t.Fatal()` in subtests to prevent nil pointer dereference warnings; CLI flag ordering fix - `BuildCommandWithPrompt()` places `--print <prompt>` after all option flags (Issue #111)
 - Benchmark organization: Table-driven benchmarks across all core modules (options, parser, shared, control, cli)
 - Makefile integration: All code quality checks (fmt, vet, lint, cyclo) unified under `make check`
+- Python SDK parity tracking: `docs/tracking/README.md` tracks all Python SDK PRs to port; organized into 4 chronological phases (Phase 1: Jan 26-Feb 20, Phase 2: Mar 3-Mar 16, Phase 3: Mar 20-Mar 30, Phase 4: Mar 31-Apr 8); last ported features: tool_use_result (Go PR #99), errors field on ResultMessage (Go PR #114, Python PR #749)
 
 <!-- END AUTO-MANAGED -->
 
@@ -126,6 +131,7 @@ make ci                           # Run full CI pipeline locally
 - **Thread safety**: All mocks must be thread-safe with proper mutex usage
 - **Self-contained tests**: Each test file has its own helpers to avoid dependencies
 - **Benchmark organization**: Use table-driven benchmarks with realistic scenarios, measure allocations with `b.ReportAllocs()`
+- **t.Fatal() + return**: Always follow `t.Fatal()` with `return` in subtests to prevent staticcheck SA5011 nil pointer dereference warnings (staticcheck does not track that t.Fatal() stops execution)
 
 <!-- END AUTO-MANAGED -->
 
