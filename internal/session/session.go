@@ -98,8 +98,8 @@ type ContentBlock struct {
 	Source map[string]any `json:"source,omitempty"`
 }
 
-// SessionMessage represents a message from a session transcript.
-type SessionMessage struct {
+// Message represents a message from a session transcript.
+type Message struct {
 	Type      string `json:"type"` // "user", "assistant", etc. (there are many other types beyond just these two)
 	UUID      string `json:"uuid"`
 	SessionID string `json:"session_id"`
@@ -112,8 +112,8 @@ type SessionMessage struct {
 	ParentToolUseID *string         `json:"parent_tool_use_id,omitempty"` // reserved
 }
 
-// SessionOption configures session query behavior.
-type SessionOption func(*sessionOpts)
+// Option configures session query behavior.
+type Option func(*sessionOpts)
 
 type sessionOpts struct {
 	directory string
@@ -127,28 +127,28 @@ func defaultOpts() sessionOpts {
 
 // WithSessionDirectory scopes the query to a specific project directory.
 // When omitted, sessions across all projects are searched.
-func WithSessionDirectory(dir string) SessionOption {
+func WithSessionDirectory(dir string) Option {
 	return func(o *sessionOpts) {
 		o.directory = dir
 	}
 }
 
 // WithSessionLimit sets the maximum number of results to return.
-func WithSessionLimit(n int) SessionOption {
+func WithSessionLimit(n int) Option {
 	return func(o *sessionOpts) {
 		o.limit = n
 	}
 }
 
-// WithSessionOffset skips the first n messages (GetSessionMessages only).
-func WithSessionOffset(n int) SessionOption {
+// WithSessionOffset skips the first n messages (GetMessages only).
+func WithSessionOffset(n int) Option {
 	return func(o *sessionOpts) {
 		o.offset = n
 	}
 }
 
 // ListSessions returns metadata for sessions, sorted by LastModified descending.
-func ListSessions(opts ...SessionOption) ([]SDKSessionInfo, error) {
+func ListSessions(opts ...Option) ([]SDKSessionInfo, error) {
 	o := defaultOpts()
 	for _, fn := range opts {
 		fn(&o)
@@ -179,8 +179,8 @@ func ListSessions(opts ...SessionOption) ([]SDKSessionInfo, error) {
 	return sessions, nil
 }
 
-// GetSessionMessages reads user and assistant messages from a session transcript.
-func GetSessionMessages(sessionID string, opts ...SessionOption) ([]SessionMessage, error) {
+// GetMessages reads user and assistant messages from a session transcript.
+func GetMessages(sessionID string, opts ...Option) ([]Message, error) {
 	o := defaultOpts()
 	for _, fn := range opts {
 		fn(&o)
@@ -196,7 +196,7 @@ func GetSessionMessages(sessionID string, opts ...SessionOption) ([]SessionMessa
 		return nil, fmt.Errorf("reading session %s: %w", sessionID, err)
 	}
 
-	messages := buildSessionMessages(sessionID, entries)
+	messages := buildMessages(sessionID, entries)
 
 	if o.offset > 0 {
 		if o.offset >= len(messages) {
@@ -214,7 +214,7 @@ func GetSessionMessages(sessionID string, opts ...SessionOption) ([]SessionMessa
 
 // GetSessionInfo returns metadata for a single session by ID.
 // Returns nil (not an error) if the session is not found.
-func GetSessionInfo(sessionID string, opts ...SessionOption) (*SDKSessionInfo, error) {
+func GetSessionInfo(sessionID string, opts ...Option) (*SDKSessionInfo, error) {
 	o := defaultOpts()
 	for _, fn := range opts {
 		fn(&o)
@@ -523,15 +523,15 @@ func parseContentBlock(raw map[string]any) ContentBlock {
 	return cb
 }
 
-// buildSessionMessages extracts user and assistant messages from JSONL entries.
-func buildSessionMessages(sessionID string, entries []jsonlEntry) []SessionMessage {
-	var messages []SessionMessage
+// buildMessages extracts user and assistant messages from JSONL entries.
+func buildMessages(sessionID string, entries []jsonlEntry) []Message {
+	var messages []Message
 	for _, e := range entries {
 		if e.entryType != "user" && e.entryType != "assistant" {
 			continue
 		}
 
-		msg := SessionMessage{
+		msg := Message{
 			Type:      e.entryType,
 			SessionID: sessionID,
 		}

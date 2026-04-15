@@ -162,7 +162,7 @@ func TestListSessions(t *testing.T) {
 	})
 }
 
-func TestGetSessionMessages(t *testing.T) {
+func TestGetMessages(t *testing.T) {
 	_, projDir := setupTestProject(t)
 
 	writeSessionJSONL(t, projDir, "cccc-3333", []map[string]any{
@@ -174,9 +174,9 @@ func TestGetSessionMessages(t *testing.T) {
 	})
 
 	t.Run("returns user and assistant messages", func(t *testing.T) {
-		msgs, err := GetSessionMessages("cccc-3333", WithSessionDirectory("/test/project"))
+		msgs, err := GetMessages("cccc-3333", WithSessionDirectory("/test/project"))
 		if err != nil {
-			t.Fatalf("GetSessionMessages() error: %v", err)
+			t.Fatalf("GetMessages() error: %v", err)
 		}
 		if len(msgs) != 3 {
 			t.Fatalf("got %d messages, want 3", len(msgs))
@@ -193,9 +193,9 @@ func TestGetSessionMessages(t *testing.T) {
 	})
 
 	t.Run("preserves uuid and session_id", func(t *testing.T) {
-		msgs, err := GetSessionMessages("cccc-3333", WithSessionDirectory("/test/project"))
+		msgs, err := GetMessages("cccc-3333", WithSessionDirectory("/test/project"))
 		if err != nil {
-			t.Fatalf("GetSessionMessages() error: %v", err)
+			t.Fatalf("GetMessages() error: %v", err)
 		}
 		if msgs[0].UUID != "u1" {
 			t.Errorf("msgs[0].UUID = %q, want %q", msgs[0].UUID, "u1")
@@ -206,12 +206,12 @@ func TestGetSessionMessages(t *testing.T) {
 	})
 
 	t.Run("respects limit", func(t *testing.T) {
-		msgs, err := GetSessionMessages("cccc-3333",
+		msgs, err := GetMessages("cccc-3333",
 			WithSessionDirectory("/test/project"),
 			WithSessionLimit(2),
 		)
 		if err != nil {
-			t.Fatalf("GetSessionMessages() error: %v", err)
+			t.Fatalf("GetMessages() error: %v", err)
 		}
 		if len(msgs) != 2 {
 			t.Fatalf("got %d messages, want 2", len(msgs))
@@ -219,12 +219,12 @@ func TestGetSessionMessages(t *testing.T) {
 	})
 
 	t.Run("respects offset", func(t *testing.T) {
-		msgs, err := GetSessionMessages("cccc-3333",
+		msgs, err := GetMessages("cccc-3333",
 			WithSessionDirectory("/test/project"),
 			WithSessionOffset(1),
 		)
 		if err != nil {
-			t.Fatalf("GetSessionMessages() error: %v", err)
+			t.Fatalf("GetMessages() error: %v", err)
 		}
 		if len(msgs) != 2 {
 			t.Fatalf("got %d messages, want 2", len(msgs))
@@ -235,12 +235,12 @@ func TestGetSessionMessages(t *testing.T) {
 	})
 
 	t.Run("offset beyond length returns nil", func(t *testing.T) {
-		msgs, err := GetSessionMessages("cccc-3333",
+		msgs, err := GetMessages("cccc-3333",
 			WithSessionDirectory("/test/project"),
 			WithSessionOffset(100),
 		)
 		if err != nil {
-			t.Fatalf("GetSessionMessages() error: %v", err)
+			t.Fatalf("GetMessages() error: %v", err)
 		}
 		if msgs != nil {
 			t.Fatalf("got %d messages, want nil", len(msgs))
@@ -248,7 +248,7 @@ func TestGetSessionMessages(t *testing.T) {
 	})
 
 	t.Run("not found returns error", func(t *testing.T) {
-		_, err := GetSessionMessages("nonexistent", WithSessionDirectory("/test/project"))
+		_, err := GetMessages("nonexistent", WithSessionDirectory("/test/project"))
 		if err == nil {
 			t.Fatal("expected error for nonexistent session")
 		}
@@ -344,7 +344,7 @@ func TestMessageContentParsing(t *testing.T) {
 		}}, "uuid": "a1", "timestamp": "2026-01-01T00:00:02Z", "sessionId": "content-test"},
 	})
 
-	msgs, err := GetSessionMessages("content-test", WithSessionDirectory("/test/project"))
+	msgs, err := GetMessages("content-test", WithSessionDirectory("/test/project"))
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
@@ -425,7 +425,7 @@ func TestContentBlockParsing(t *testing.T) {
 		}}, "uuid": "u2", "timestamp": "2026-01-01T00:00:02Z", "sessionId": "blocks-test"},
 	})
 
-	msgs, err := GetSessionMessages("blocks-test", WithSessionDirectory("/test/project"))
+	msgs, err := GetMessages("blocks-test", WithSessionDirectory("/test/project"))
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
@@ -489,7 +489,7 @@ func TestContentBlockUnknownType(t *testing.T) {
 		}}, "uuid": "a1", "timestamp": "2026-01-01T00:00:00Z", "sessionId": "unknown-test"},
 	})
 
-	msgs, err := GetSessionMessages("unknown-test", WithSessionDirectory("/test/project"))
+	msgs, err := GetMessages("unknown-test", WithSessionDirectory("/test/project"))
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}

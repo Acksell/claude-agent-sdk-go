@@ -8,7 +8,7 @@ import (
 type SDKSessionInfo = session.SDKSessionInfo
 
 // SessionMessage represents a message from a session transcript.
-type SessionMessage = session.SessionMessage
+type SessionMessage = session.Message
 
 // SessionContentBlock represents a typed content block from a session message.
 type SessionContentBlock = session.ContentBlock
@@ -44,7 +44,7 @@ const (
 )
 
 // SessionOption configures session query behavior.
-type SessionOption = session.SessionOption
+type SessionOption = session.Option
 
 // WithSessionDirectory scopes the query to a specific project directory.
 // When omitted, sessions across all projects are searched.
@@ -82,7 +82,7 @@ func ListSessions(opts ...SessionOption) ([]SDKSessionInfo, error) {
 //	    claudecode.WithSessionLimit(20),
 //	)
 func GetSessionMessages(sessionID string, opts ...SessionOption) ([]SessionMessage, error) {
-	return session.GetSessionMessages(sessionID, opts...)
+	return session.GetMessages(sessionID, opts...)
 }
 
 // GetSessionInfo returns metadata for a single session by ID.
