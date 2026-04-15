@@ -31,7 +31,11 @@ func writeTestSession(t *testing.T, dir, sessionID string, entries []map[string]
 	if err != nil {
 		t.Fatalf("creating session file: %v", err)
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			t.Errorf("closing session file: %v", err)
+		}
+	}()
 
 	enc := json.NewEncoder(f)
 	for _, entry := range entries {

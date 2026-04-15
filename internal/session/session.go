@@ -357,14 +357,17 @@ type jsonlEntry struct {
 }
 
 // parseJSONLFile reads and parses all lines from a JSONL file.
-func parseJSONLFile(path string) ([]jsonlEntry, error) {
+func parseJSONLFile(path string) (entries []jsonlEntry, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("closing session file: %w", cerr)
+		}
+	}()
 
-	var entries []jsonlEntry
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
@@ -374,14 +377,14 @@ func parseJSONLFile(path string) ([]jsonlEntry, error) {
 			continue
 		}
 		var raw map[string]any
-		if err := json.Unmarshal(line, &raw); err != nil {
+		if uerr := json.Unmarshal(line, &raw); uerr != nil {
 			continue // skip malformed lines
 		}
 		typ, _ := raw["type"].(string)
 		entries = append(entries, jsonlEntry{entryType: typ, raw: raw})
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scanning JSONL file: %w", err)
+	if serr := scanner.Err(); serr != nil {
+		return nil, fmt.Errorf("scanning JSONL file: %w", serr)
 	}
 	return entries, nil
 }
