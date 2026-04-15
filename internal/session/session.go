@@ -22,20 +22,94 @@ type SDKSessionInfo struct {
 	LastModified int64   `json:"last_modified"`
 	FileSize     *int64  `json:"file_size,omitempty"`
 	CustomTitle  *string `json:"custom_title,omitempty"`
-	FirstPrompt  *string `json:"first_prompt,omitempty"`
 	GitBranch    *string `json:"git_branch,omitempty"`
 	Cwd          *string `json:"cwd,omitempty"`
 	Tag          *string `json:"tag,omitempty"`
 	CreatedAt    *int64  `json:"created_at,omitempty"`
 }
 
+// ContentType discriminates the MessageContent union.
+type ContentType int
+
+const (
+	// ContentTypeString indicates the message content is a plain string.
+	ContentTypeString ContentType = iota + 1
+	// ContentTypeBlocks indicates the message content is an array of content blocks.
+	ContentTypeBlocks
+)
+
+// MessageContent is a sum type representing the content of a session message.
+// Kind indicates which field is populated.
+type MessageContent struct {
+	Kind   ContentType
+	String string         // populated when Kind == ContentTypeString
+	Blocks []ContentBlock // populated when Kind == ContentTypeBlocks
+}
+
+// Block type constants for ContentBlock.Type.
+const (
+	BlockTypeText                         = "text"
+	BlockTypeThinking                     = "thinking"
+	BlockTypeRedactedThinking             = "redacted_thinking"
+	BlockTypeToolUse                      = "tool_use"
+	BlockTypeServerToolUse                = "server_tool_use"
+	BlockTypeToolResult                   = "tool_result"
+	BlockTypeImage                        = "image"
+	BlockTypeWebSearchToolResult          = "web_search_tool_result"
+	BlockTypeWebFetchToolResult           = "web_fetch_tool_result"
+	BlockTypeCodeExecutionToolResult      = "code_execution_tool_result"
+	BlockTypeBashCodeExecutionToolResult  = "bash_code_execution_tool_result"
+	BlockTypeTextEditorCodeExecToolResult = "text_editor_code_execution_tool_result"
+	BlockTypeToolSearchToolResult         = "tool_search_tool_result"
+	BlockTypeContainerUpload              = "container_upload"
+)
+
+// ContentBlock represents a typed content block from a session message.
+// The Type field discriminates the variant. Unknown types are preserved in Raw.
+type ContentBlock struct {
+	// Type discriminates the block variant.
+	// Use the BlockType* constants to compare against known types.
+	Type string `json:"type"`
+
+	// Raw holds the full original map for all block types (always populated).
+	Raw map[string]any `json:"-"`
+
+	// text
+	Text string `json:"text,omitempty"`
+
+	// thinking
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
+
+	// redacted_thinking
+	Data string `json:"data,omitempty"`
+
+	// tool_use, server_tool_use
+	ID    string         `json:"id,omitempty"`
+	Name  string         `json:"name,omitempty"`
+	Input map[string]any `json:"input,omitempty"`
+
+	// tool_result
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	Content   any    `json:"content,omitempty"` // string or nested blocks
+	IsError   *bool  `json:"is_error,omitempty"`
+
+	// image
+	Source map[string]any `json:"source,omitempty"`
+}
+
 // SessionMessage represents a message from a session transcript.
 type SessionMessage struct {
-	Type            string  `json:"type"`
-	UUID            string  `json:"uuid"`
-	SessionID       string  `json:"session_id"`
-	Message         any     `json:"message"`
-	ParentToolUseID *string `json:"parent_tool_use_id,omitempty"`
+	Type      string `json:"type"` // "user", "assistant", etc. (there are many other types beyond just these two)
+	UUID      string `json:"uuid"`
+	SessionID string `json:"session_id"`
+	// *should* be true for system-injected messages,
+	// but nothing in claude api enforces it,
+	// so some implementations like claude-vscode inject messages without this.
+	IsMeta          bool            `json:"is_meta"`
+	RawMessage      map[string]any  `json:"message"`                      // raw message data
+	Content         *MessageContent `json:"-"`                            // parsed content
+	ParentToolUseID *string         `json:"parent_tool_use_id,omitempty"` // reserved
 }
 
 // SessionOption configures session query behavior.
@@ -348,13 +422,6 @@ func buildSessionInfo(sessionID string, entries []jsonlEntry, fileInfo os.FileIn
 				}
 			}
 		case "user":
-			if info.FirstPrompt == nil && !isMeta(e.raw) {
-				if msg, ok := e.raw["message"].(map[string]any); ok {
-					if content, ok := msg["content"].(string); ok && content != "" {
-						info.FirstPrompt = &content
-					}
-				}
-			}
 			// Track cwd and gitBranch (last one wins)
 			if branch, ok := e.raw["gitBranch"].(string); ok && branch != "" {
 				info.GitBranch = &branch
@@ -375,12 +442,12 @@ func buildSessionInfo(sessionID string, entries []jsonlEntry, fileInfo os.FileIn
 		}
 	}
 
-	// Summary priority: custom_title > first_prompt > session_id
+	// Summary priority: custom_title > timestamp fallback
 	switch {
 	case info.CustomTitle != nil:
 		info.Summary = *info.CustomTitle
-	case info.FirstPrompt != nil:
-		info.Summary = *info.FirstPrompt
+	case info.CreatedAt != nil:
+		info.Summary = fmt.Sprintf("New session - %s", time.UnixMilli(*info.CreatedAt).UTC().Format(time.RFC3339))
 	default:
 		info.Summary = sessionID
 	}
@@ -388,12 +455,83 @@ func buildSessionInfo(sessionID string, entries []jsonlEntry, fileInfo os.FileIn
 	return info
 }
 
-// isMeta checks if a JSONL entry is a meta/system message (not a real user prompt).
-func isMeta(raw map[string]any) bool {
-	if meta, ok := raw["isMeta"].(bool); ok && meta {
-		return true
+// parseMessageContent parses the content field of a message into a typed MessageContent.
+func parseMessageContent(msg map[string]any) *MessageContent {
+	content, ok := msg["content"]
+	if !ok {
+		return nil
 	}
-	return false
+
+	// String content.
+	if s, ok := content.(string); ok {
+		return &MessageContent{
+			Kind:   ContentTypeString,
+			String: s,
+		}
+	}
+
+	// Content block array.
+	blocks, ok := content.([]any)
+	if !ok {
+		return nil
+	}
+
+	parsed := make([]ContentBlock, 0, len(blocks))
+	for _, block := range blocks {
+		b, ok := block.(map[string]any)
+		if !ok {
+			continue
+		}
+		parsed = append(parsed, parseContentBlock(b))
+	}
+
+	return &MessageContent{
+		Kind:   ContentTypeBlocks,
+		Blocks: parsed,
+	}
+}
+
+// parseContentBlock parses a single content block from a raw map.
+// Known fields are extracted into typed struct fields; Raw is always populated.
+func parseContentBlock(raw map[string]any) ContentBlock {
+	cb := ContentBlock{
+		Raw: raw,
+	}
+
+	cb.Type, _ = raw["type"].(string)
+
+	switch cb.Type {
+	case BlockTypeText:
+		cb.Text, _ = raw["text"].(string)
+
+	case BlockTypeThinking:
+		cb.Thinking, _ = raw["thinking"].(string)
+		cb.Signature, _ = raw["signature"].(string)
+
+	case BlockTypeRedactedThinking:
+		cb.Data, _ = raw["data"].(string)
+
+	case BlockTypeToolUse, BlockTypeServerToolUse:
+		cb.ID, _ = raw["id"].(string)
+		cb.Name, _ = raw["name"].(string)
+		if input, ok := raw["input"].(map[string]any); ok {
+			cb.Input = input
+		}
+
+	case BlockTypeToolResult:
+		cb.ToolUseID, _ = raw["tool_use_id"].(string)
+		cb.Content = raw["content"]
+		if isErr, ok := raw["is_error"].(bool); ok {
+			cb.IsError = &isErr
+		}
+
+	case BlockTypeImage:
+		if source, ok := raw["source"].(map[string]any); ok {
+			cb.Source = source
+		}
+	}
+
+	return cb
 }
 
 // buildSessionMessages extracts user and assistant messages from JSONL entries.
@@ -403,14 +541,22 @@ func buildSessionMessages(sessionID string, entries []jsonlEntry) []SessionMessa
 		if e.entryType != "user" && e.entryType != "assistant" {
 			continue
 		}
+
 		msg := SessionMessage{
 			Type:      e.entryType,
 			SessionID: sessionID,
-			Message:   e.raw["message"],
 		}
 		if uuid, ok := e.raw["uuid"].(string); ok {
 			msg.UUID = uuid
 		}
+		if meta, ok := e.raw["isMeta"].(bool); ok && meta {
+			msg.IsMeta = true
+		}
+		if rawMsg, ok := e.raw["message"].(map[string]any); ok {
+			msg.RawMessage = rawMsg
+			msg.Content = parseMessageContent(rawMsg)
+		}
+
 		messages = append(messages, msg)
 	}
 	return messages

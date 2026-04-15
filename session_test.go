@@ -100,8 +100,10 @@ func TestPublicGetSessionInfo(t *testing.T) {
 	if info == nil {
 		t.Fatal("expected non-nil info")
 	}
-	if info.Summary != "Test prompt" {
-		t.Errorf("Summary = %q, want %q", info.Summary, "Test prompt")
+	// Summary falls back to timestamp when no custom title is set.
+	want := "New session - 2026-03-01T00:00:00Z"
+	if info.Summary != want {
+		t.Errorf("Summary = %q, want %q", info.Summary, want)
 	}
 
 	// Not found returns nil
