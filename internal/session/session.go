@@ -7,11 +7,13 @@ package session
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -126,13 +128,23 @@ type Message struct {
 type Option func(*sessionOpts)
 
 type sessionOpts struct {
-	directory string
-	limit     int
-	offset    int
+	directory        string
+	limit            int
+	offset           int
+	includeWorktrees *bool // nil means default (true)
 }
 
 func defaultOpts() sessionOpts {
 	return sessionOpts{}
+}
+
+// includeWorktreesEnabled returns whether worktree scanning is enabled.
+// Defaults to true when not explicitly set.
+func (o sessionOpts) includeWorktreesEnabled() bool {
+	if o.includeWorktrees == nil {
+		return true
+	}
+	return *o.includeWorktrees
 }
 
 // WithSessionDirectory scopes the query to a specific project directory.
@@ -154,6 +166,15 @@ func WithSessionLimit(n int) Option {
 func WithSessionOffset(n int) Option {
 	return func(o *sessionOpts) {
 		o.offset = n
+	}
+}
+
+// WithIncludeWorktrees controls whether git worktree directories are included
+// when searching for sessions. Defaults to true. Only has effect when a
+// directory is specified via WithSessionDirectory.
+func WithIncludeWorktrees(include bool) Option {
+	return func(o *sessionOpts) {
+		o.includeWorktrees = &include
 	}
 }
 
@@ -179,6 +200,9 @@ func ListSessions(opts ...Option) ([]SDKSessionInfo, error) {
 		}
 		sessions = append(sessions, infos...)
 	}
+
+	// Deduplicate sessions that appear in multiple worktree project dirs.
+	sessions = deduplicateBySessionID(sessions)
 
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].LastModified > sessions[j].LastModified
@@ -255,6 +279,36 @@ func configDir() (string, error) {
 	return filepath.Join(home, ".claude"), nil
 }
 
+// worktreeTimeout is the maximum time to wait for `git worktree list --porcelain`.
+const worktreeTimeout = 5 * time.Second
+
+// getWorktreePaths runs `git worktree list --porcelain` in the given directory
+// and returns all worktree paths. Returns an empty slice (not an error) if git
+// is not available, the directory is not a git repo, or the command fails.
+// Matches the Python SDK's _get_worktree_paths.
+func getWorktreePaths(dir string) []string {
+	ctx, cancel := context.WithTimeout(context.Background(), worktreeTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "worktree", "list", "--porcelain")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	var paths []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "worktree ") {
+			p := strings.TrimPrefix(line, "worktree ")
+			if p != "" {
+				paths = append(paths, p)
+			}
+		}
+	}
+	return paths
+}
+
 // encodeCwd encodes a directory path by replacing non-alphanumeric characters with "-".
 func encodeCwd(cwd string) string {
 	var b strings.Builder
@@ -270,6 +324,8 @@ func encodeCwd(cwd string) string {
 }
 
 // projectDirsForOpts returns the project directories to search based on options.
+// When a directory is specified and includeWorktrees is enabled, it also includes
+// project directories for all git worktree paths.
 func projectDirsForOpts(o sessionOpts) ([]string, error) {
 	cfgDir, err := configDir()
 	if err != nil {
@@ -282,12 +338,33 @@ func projectDirsForOpts(o sessionOpts) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("resolving directory: %w", err)
 		}
-		encoded := encodeCwd(abs)
-		dir := filepath.Join(projectsDir, encoded)
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
+
+		// Collect all candidate directories: user's dir first, then worktrees.
+		candidatePaths := []string{abs}
+		if o.includeWorktreesEnabled() {
+			for _, wt := range getWorktreePaths(abs) {
+				candidatePaths = append(candidatePaths, wt)
+			}
+		}
+
+		// Encode each candidate path and collect existing project dirs.
+		seen := make(map[string]bool)
+		var dirs []string
+		for _, p := range candidatePaths {
+			encoded := encodeCwd(p)
+			dir := filepath.Join(projectsDir, encoded)
+			if seen[dir] {
+				continue
+			}
+			seen[dir] = true
+			if _, err := os.Stat(dir); err == nil {
+				dirs = append(dirs, dir)
+			}
+		}
+		if len(dirs) == 0 {
 			return nil, nil
 		}
-		return []string{dir}, nil
+		return dirs, nil
 	}
 
 	// List all project directories
@@ -306,6 +383,25 @@ func projectDirsForOpts(o sessionOpts) ([]string, error) {
 		}
 	}
 	return dirs, nil
+}
+
+// deduplicateBySessionID deduplicates sessions by SessionID, keeping the entry
+// with the newest LastModified value. Matches the Python SDK's _deduplicate_by_session_id.
+func deduplicateBySessionID(sessions []SDKSessionInfo) []SDKSessionInfo {
+	if len(sessions) == 0 {
+		return sessions
+	}
+	best := make(map[string]SDKSessionInfo, len(sessions))
+	for _, s := range sessions {
+		if existing, ok := best[s.SessionID]; !ok || s.LastModified > existing.LastModified {
+			best[s.SessionID] = s
+		}
+	}
+	deduped := make([]SDKSessionInfo, 0, len(best))
+	for _, s := range best {
+		deduped = append(deduped, s)
+	}
+	return deduped
 }
 
 // listSessionsInDir lists all sessions in a single project directory.
