@@ -11,16 +11,36 @@ import (
 
 // setupSessionTestProject creates a temp config dir with a project directory
 // and sets CLAUDE_CONFIG_DIR for testing.
+// The encoded directory name is computed dynamically so tests work on Windows
+// where filepath.Abs("/test/project") prepends a drive letter.
 func setupSessionTestProject(t *testing.T) string {
 	t.Helper()
 	cfgDir := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", cfgDir)
 
-	projDir := filepath.Join(cfgDir, "projects", "-test-project")
+	abs, err := filepath.Abs("/test/project")
+	if err != nil {
+		t.Fatalf("filepath.Abs: %v", err)
+	}
+	encoded := testEncodeCwd(abs)
+	projDir := filepath.Join(cfgDir, "projects", encoded)
 	if err := os.MkdirAll(projDir, 0o750); err != nil {
 		t.Fatalf("creating project dir: %v", err)
 	}
 	return projDir
+}
+
+// testEncodeCwd mirrors the internal encodeCwd function for test setup.
+func testEncodeCwd(cwd string) string {
+	var b []byte
+	for _, r := range cwd {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b = append(b, byte(r))
+		} else {
+			b = append(b, '-')
+		}
+	}
+	return string(b)
 }
 
 // writeTestSession writes a session JSONL file with the given entries.

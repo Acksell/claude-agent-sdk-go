@@ -69,12 +69,19 @@ func TestConfigDir(t *testing.T) {
 
 // setupTestProject creates a temp dir structured like ~/.claude/projects/<encoded>/
 // and sets CLAUDE_CONFIG_DIR to point at it.
+// The encoded directory name is computed dynamically so tests work on Windows
+// where filepath.Abs("/test/project") prepends a drive letter.
 func setupTestProject(t *testing.T) (configDir string, projectDir string) {
 	t.Helper()
 	cfgDir := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", cfgDir)
 
-	projDir := filepath.Join(cfgDir, "projects", "-test-project")
+	abs, err := filepath.Abs("/test/project")
+	if err != nil {
+		t.Fatalf("filepath.Abs: %v", err)
+	}
+	encoded := encodeCwd(abs)
+	projDir := filepath.Join(cfgDir, "projects", encoded)
 	if err := os.MkdirAll(projDir, 0o750); err != nil {
 		t.Fatalf("creating project dir: %v", err)
 	}
