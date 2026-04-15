@@ -69,7 +69,7 @@ func setupTestProject(t *testing.T) (configDir string, projectDir string) {
 	t.Setenv("CLAUDE_CONFIG_DIR", cfgDir)
 
 	projDir := filepath.Join(cfgDir, "projects", "-test-project")
-	if err := os.MkdirAll(projDir, 0o755); err != nil {
+	if err := os.MkdirAll(projDir, 0o750); err != nil {
 		t.Fatalf("creating project dir: %v", err)
 	}
 	return cfgDir, projDir
@@ -533,7 +533,7 @@ func TestParseJSONLSkipsMalformedLines(t *testing.T) {
 not valid json
 {"type":"assistant","uuid":"a1","message":{"role":"assistant","content":[]},"timestamp":"2026-01-01T00:00:01Z"}
 `
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("writing file: %v", err)
 	}
 

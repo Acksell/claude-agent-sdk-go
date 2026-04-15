@@ -337,6 +337,7 @@ func findSessionFile(sessionID string, o sessionOpts) (string, error) {
 
 // buildSessionInfoFromFile builds SDKSessionInfo by reading a JSONL file.
 func buildSessionInfoFromFile(sessionID, path string) (*SDKSessionInfo, error) {
+	path = filepath.Clean(path)
 	fileInfo, err := os.Stat(path)
 	if err != nil {
 		return nil, err
@@ -358,7 +359,7 @@ type jsonlEntry struct {
 
 // parseJSONLFile reads and parses all lines from a JSONL file.
 func parseJSONLFile(path string) (entries []jsonlEntry, err error) {
-	f, err := os.Open(path)
+	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil, err
 	}

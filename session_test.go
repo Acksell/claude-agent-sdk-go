@@ -17,7 +17,7 @@ func setupSessionTestProject(t *testing.T) string {
 	t.Setenv("CLAUDE_CONFIG_DIR", cfgDir)
 
 	projDir := filepath.Join(cfgDir, "projects", "-test-project")
-	if err := os.MkdirAll(projDir, 0o755); err != nil {
+	if err := os.MkdirAll(projDir, 0o750); err != nil {
 		t.Fatalf("creating project dir: %v", err)
 	}
 	return projDir
