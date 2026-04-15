@@ -8,7 +8,9 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,6 +18,10 @@ import (
 	"strings"
 	"time"
 )
+
+// errSessionNotFound is a sentinel error returned by findSessionFile when
+// the session JSONL file does not exist in any project directory.
+var errSessionNotFound = errors.New("session not found")
 
 // SDKSessionInfo holds metadata about a session.
 type SDKSessionInfo struct {
@@ -225,8 +231,11 @@ func GetSessionInfo(sessionID string, opts ...Option) (*SDKSessionInfo, error) {
 	}
 
 	path, err := findSessionFile(sessionID, o)
+	if errors.Is(err, errSessionNotFound) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil, nil // session not found
+		return nil, err
 	}
 
 	return buildSessionInfoFromFile(sessionID, path)
@@ -336,7 +345,7 @@ func findSessionFile(sessionID string, o sessionOpts) (string, error) {
 			return path, nil
 		}
 	}
-	return "", fmt.Errorf("session not found: %s", sessionID)
+	return "", fmt.Errorf("%w: %s", errSessionNotFound, sessionID)
 }
 
 // metadataReadSize is the size of head/tail chunks for metadata extraction.
@@ -406,6 +415,8 @@ const maxFirstPromptLen = 200
 // skipFirstPromptPattern matches auto-generated or system messages that should
 // be skipped when extracting the first meaningful user prompt.
 // Matches the Python SDK's _SKIP_FIRST_PROMPT_PATTERN.
+// permalink:
+// https://github.com/anthropics/claude-agent-sdk-python/blob/acd62ea8f7bba637f604e0bb09c21b86176ccb49/src/claude_agent_sdk/_internal/sessions.py#L40
 var skipFirstPromptPattern = regexp.MustCompile(
 	`^(?:<local-command-stdout>|<session-start-hook>|<tick>|<goal>|` +
 		`\[Request interrupted by user[^\]]*\]|` +
@@ -540,11 +551,9 @@ func parseJSONLHeadTail(path string, bufSize int64) (entries []jsonlEntry, err e
 
 	// Read head chunk.
 	headBuf := make([]byte, bufSize)
-	n, err := f.Read(headBuf)
-	if err != nil {
+	if _, err := io.ReadFull(f, headBuf); err != nil {
 		return nil, fmt.Errorf("reading head: %w", err)
 	}
-	headBuf = headBuf[:n]
 
 	// Parse complete lines from head (discard last partial line).
 	entries = parseLinesFromBytes(headBuf, true)
@@ -555,11 +564,9 @@ func parseJSONLHeadTail(path string, bufSize int64) (entries []jsonlEntry, err e
 		return nil, fmt.Errorf("seeking to tail: %w", err)
 	}
 	tailBuf := make([]byte, bufSize)
-	n, err = f.Read(tailBuf)
-	if err != nil {
+	if _, err := io.ReadFull(f, tailBuf); err != nil {
 		return nil, fmt.Errorf("reading tail: %w", err)
 	}
-	tailBuf = tailBuf[:n]
 
 	// Parse complete lines from tail (discard first partial line).
 	tailEntries := parseLinesFromBytes(tailBuf, false)

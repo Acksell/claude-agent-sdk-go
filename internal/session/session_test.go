@@ -912,6 +912,35 @@ func TestSummaryFallbackIncludesFirstPrompt(t *testing.T) {
 	}
 }
 
+func TestBuildMessagesDuplicateUUID(t *testing.T) {
+	// Message edits create duplicate UUIDs — the later entry should win (last-write-wins).
+	// Chain: u1 -> a1(v1) -> u2, then a1 is edited to a1(v2) at a higher file position.
+	// The chain should use a1(v2)'s content.
+	entries := []jsonlEntry{
+		{entryType: "user", raw: map[string]any{"type": "user", "uuid": "u1", "message": map[string]any{"content": "Hello"}}},
+		{entryType: "assistant", raw: map[string]any{"type": "assistant", "uuid": "a1", "parentUuid": "u1", "message": map[string]any{"content": "Original response"}}},
+		{entryType: "user", raw: map[string]any{"type": "user", "uuid": "u2", "parentUuid": "a1", "message": map[string]any{"content": "Follow-up"}}},
+		// Edited version of a1 appears later in the file.
+		{entryType: "assistant", raw: map[string]any{"type": "assistant", "uuid": "a1", "parentUuid": "u1", "message": map[string]any{"content": "Edited response"}}},
+	}
+
+	msgs := buildMessages("test-session", entries)
+	if len(msgs) != 3 {
+		t.Fatalf("got %d messages, want 3", len(msgs))
+		return
+	}
+	wantUUIDs := []string{"u1", "a1", "u2"}
+	for i, want := range wantUUIDs {
+		if msgs[i].UUID != want {
+			t.Errorf("msgs[%d].UUID = %q, want %q", i, msgs[i].UUID, want)
+		}
+	}
+	// The edited version (last in file) should be used for a1's content.
+	if msgs[1].RawMessage["content"] != "Edited response" {
+		t.Errorf("a1 content = %v, want %q (should use edited version)", msgs[1].RawMessage["content"], "Edited response")
+	}
+}
+
 func TestBuildMessagesFlatScanFiltersIsMeta(t *testing.T) {
 	// Flat-scan path (no parentUuid) also filters isMeta.
 	entries := []jsonlEntry{
