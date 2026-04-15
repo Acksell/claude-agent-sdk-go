@@ -10,6 +10,39 @@ type SDKSessionInfo = session.SDKSessionInfo
 // SessionMessage represents a message from a session transcript.
 type SessionMessage = session.SessionMessage
 
+// SessionContentBlock represents a typed content block from a session message.
+type SessionContentBlock = session.ContentBlock
+
+// SessionMessageContent is a sum type representing the content of a session message.
+type SessionMessageContent = session.MessageContent
+
+// SessionContentType discriminates the SessionMessageContent union.
+type SessionContentType = session.ContentType
+
+// SessionContentType constants.
+const (
+	SessionContentTypeString = session.ContentTypeString
+	SessionContentTypeBlocks = session.ContentTypeBlocks
+)
+
+// Session content block type constants.
+const (
+	SessionBlockTypeText                         = session.BlockTypeText
+	SessionBlockTypeThinking                     = session.BlockTypeThinking
+	SessionBlockTypeRedactedThinking             = session.BlockTypeRedactedThinking
+	SessionBlockTypeToolUse                      = session.BlockTypeToolUse
+	SessionBlockTypeServerToolUse                = session.BlockTypeServerToolUse
+	SessionBlockTypeToolResult                   = session.BlockTypeToolResult
+	SessionBlockTypeImage                        = session.BlockTypeImage
+	SessionBlockTypeWebSearchToolResult          = session.BlockTypeWebSearchToolResult
+	SessionBlockTypeWebFetchToolResult           = session.BlockTypeWebFetchToolResult
+	SessionBlockTypeCodeExecutionToolResult      = session.BlockTypeCodeExecutionToolResult
+	SessionBlockTypeBashCodeExecutionToolResult  = session.BlockTypeBashCodeExecutionToolResult
+	SessionBlockTypeTextEditorCodeExecToolResult = session.BlockTypeTextEditorCodeExecToolResult
+	SessionBlockTypeToolSearchToolResult         = session.BlockTypeToolSearchToolResult
+	SessionBlockTypeContainerUpload              = session.BlockTypeContainerUpload
+)
+
 // SessionOption configures session query behavior.
 type SessionOption = session.SessionOption
 
