@@ -35,7 +35,7 @@ func main() {
 	for i, s := range sessions {
 		modified := time.UnixMilli(s.LastModified).Format("2006-01-02 15:04")
 
-		// Summary is: custom title > first prompt > session ID.
+		// Summary is: custom title > timestamp > session ID.
 		summary := s.Summary
 		if len(summary) > 80 {
 			summary = summary[:77] + "..."
