@@ -313,15 +313,40 @@ func TestGetSessionInfo(t *testing.T) {
 func TestBuildSessionInfoSummaryPriority(t *testing.T) {
 	_, projDir := setupTestProject(t)
 
-	t.Run("custom title takes priority", func(t *testing.T) {
+	t.Run("custom title takes priority over ai title", func(t *testing.T) {
 		writeSessionJSONL(t, projDir, "eeee-5555", []map[string]any{
 			{"type": "queue-operation", "timestamp": "2026-01-01T00:00:00Z", "sessionId": "eeee-5555"},
 			{"type": "user", "message": map[string]any{"role": "user", "content": textContent("Original prompt")}, "uuid": "u1", "timestamp": "2026-01-01T00:00:01Z", "sessionId": "eeee-5555"},
+			{"type": "ai-title", "aiTitle": "AI Generated Title", "sessionId": "eeee-5555"},
 			{"type": "custom-title", "customTitle": "My Custom Title", "sessionId": "eeee-5555"},
 		})
 		info, _ := GetSessionInfo("eeee-5555", WithSessionDirectory("/test/project"))
 		if info.Summary != "My Custom Title" {
 			t.Errorf("Summary = %q, want %q", info.Summary, "My Custom Title")
+		}
+		if info.CustomTitle == nil || *info.CustomTitle != "My Custom Title" {
+			t.Errorf("CustomTitle = %v, want %q", info.CustomTitle, "My Custom Title")
+		}
+		if info.AITitle == nil || *info.AITitle != "AI Generated Title" {
+			t.Errorf("AITitle = %v, want %q", info.AITitle, "AI Generated Title")
+		}
+	})
+
+	t.Run("ai title used when no custom title", func(t *testing.T) {
+		writeSessionJSONL(t, projDir, "eeee-5556", []map[string]any{
+			{"type": "queue-operation", "timestamp": "2026-01-01T00:00:00Z", "sessionId": "eeee-5556"},
+			{"type": "user", "message": map[string]any{"role": "user", "content": textContent("Hello")}, "uuid": "u1", "timestamp": "2026-01-01T00:00:01Z", "sessionId": "eeee-5556"},
+			{"type": "ai-title", "aiTitle": "AI Generated Title", "sessionId": "eeee-5556"},
+		})
+		info, _ := GetSessionInfo("eeee-5556", WithSessionDirectory("/test/project"))
+		if info.Summary != "AI Generated Title" {
+			t.Errorf("Summary = %q, want %q", info.Summary, "AI Generated Title")
+		}
+		if info.AITitle == nil || *info.AITitle != "AI Generated Title" {
+			t.Errorf("AITitle = %v, want %q", info.AITitle, "AI Generated Title")
+		}
+		if info.CustomTitle != nil {
+			t.Errorf("CustomTitle = %v, want nil", info.CustomTitle)
 		}
 	})
 

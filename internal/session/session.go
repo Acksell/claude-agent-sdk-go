@@ -22,6 +22,7 @@ type SDKSessionInfo struct {
 	LastModified int64   `json:"last_modified"`
 	FileSize     *int64  `json:"file_size,omitempty"`
 	CustomTitle  *string `json:"custom_title,omitempty"`
+	AITitle      *string `json:"ai_title,omitempty"`
 	GitBranch    *string `json:"git_branch,omitempty"`
 	Cwd          *string `json:"cwd,omitempty"`
 	Tag          *string `json:"tag,omitempty"`
@@ -406,6 +407,10 @@ func buildSessionInfo(sessionID string, entries []jsonlEntry, fileInfo os.FileIn
 			if title, ok := e.raw["customTitle"].(string); ok && title != "" {
 				info.CustomTitle = &title
 			}
+		case "ai-title":
+			if title, ok := e.raw["aiTitle"].(string); ok && title != "" {
+				info.AITitle = &title
+			}
 		case "tag":
 			if tag, ok := e.raw["tag"].(string); ok {
 				if tag == "" {
@@ -435,10 +440,12 @@ func buildSessionInfo(sessionID string, entries []jsonlEntry, fileInfo os.FileIn
 		}
 	}
 
-	// Summary priority: custom_title > timestamp fallback
+	// Summary priority: custom_title > ai_title > timestamp fallback
 	switch {
 	case info.CustomTitle != nil:
 		info.Summary = *info.CustomTitle
+	case info.AITitle != nil:
+		info.Summary = *info.AITitle
 	case info.CreatedAt != nil:
 		info.Summary = fmt.Sprintf("New session - %s", time.UnixMilli(*info.CreatedAt).UTC().Format(time.RFC3339))
 	default:
