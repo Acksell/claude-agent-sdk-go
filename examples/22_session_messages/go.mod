@@ -1,4 +1,4 @@
-module 02_client_streaming
+module 22_session_messages
 
 go 1.18
 

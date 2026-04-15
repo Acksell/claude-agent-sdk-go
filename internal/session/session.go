@@ -6,10 +6,12 @@ package session
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -23,6 +25,7 @@ type SDKSessionInfo struct {
 	FileSize     *int64  `json:"file_size,omitempty"`
 	CustomTitle  *string `json:"custom_title,omitempty"`
 	AITitle      *string `json:"ai_title,omitempty"`
+	FirstPrompt  *string `json:"first_prompt,omitempty"`
 	GitBranch    *string `json:"git_branch,omitempty"`
 	Cwd          *string `json:"cwd,omitempty"`
 	Tag          *string `json:"tag,omitempty"`
@@ -336,7 +339,13 @@ func findSessionFile(sessionID string, o sessionOpts) (string, error) {
 	return "", fmt.Errorf("session not found: %s", sessionID)
 }
 
+// metadataReadSize is the size of head/tail chunks for metadata extraction.
+// Matches the Python SDK's LITE_READ_BUF_SIZE.
+const metadataReadSize int64 = 64 * 1024
+
 // buildSessionInfoFromFile builds SDKSessionInfo by reading a JSONL file.
+// Uses head/tail reads for efficiency — only reads the first and last 64KB
+// of the file rather than parsing the entire JSONL.
 func buildSessionInfoFromFile(sessionID, path string) (*SDKSessionInfo, error) {
 	path = filepath.Clean(path)
 	fileInfo, err := os.Stat(path)
@@ -344,7 +353,7 @@ func buildSessionInfoFromFile(sessionID, path string) (*SDKSessionInfo, error) {
 		return nil, err
 	}
 
-	entries, err := parseJSONLFile(path)
+	entries, err := parseJSONLHeadTail(path, metadataReadSize)
 	if err != nil {
 		return nil, err
 	}
@@ -391,6 +400,240 @@ func parseJSONLFile(path string) (entries []jsonlEntry, err error) {
 	return entries, nil
 }
 
+// maxFirstPromptLen is the maximum length of the first prompt (truncated with ellipsis).
+const maxFirstPromptLen = 200
+
+// skipFirstPromptPattern matches auto-generated or system messages that should
+// be skipped when extracting the first meaningful user prompt.
+// Matches the Python SDK's _SKIP_FIRST_PROMPT_PATTERN.
+var skipFirstPromptPattern = regexp.MustCompile(
+	`^(?:<local-command-stdout>|<session-start-hook>|<tick>|<goal>|` +
+		`\[Request interrupted by user[^\]]*\]|` +
+		`\s*<ide_opened_file>[\s\S]*</ide_opened_file>\s*$|` +
+		`\s*<ide_selection>[\s\S]*</ide_selection>\s*$)`,
+)
+
+// commandNamePattern matches <command-name>...</command-name> tags.
+var commandNamePattern = regexp.MustCompile(`<command-name>(.*?)</command-name>`)
+
+// extractFirstPrompt extracts the first meaningful user prompt from JSONL entries.
+// Skips tool_result messages, isMeta, isCompactSummary, command-name messages,
+// and auto-generated patterns. Truncates to maxFirstPromptLen characters.
+func extractFirstPrompt(entries []jsonlEntry) *string {
+	for _, e := range entries {
+		if e.entryType != entryTypeUser {
+			continue
+		}
+		if meta, ok := e.raw["isMeta"].(bool); ok && meta {
+			continue
+		}
+		if cs, ok := e.raw["isCompactSummary"].(bool); ok && cs {
+			continue
+		}
+
+		rawMsg, ok := e.raw["message"].(map[string]any)
+		if !ok {
+			continue
+		}
+
+		text := extractTextFromMessage(rawMsg)
+		if text == "" {
+			continue
+		}
+
+		// Skip command-name messages.
+		if commandNamePattern.MatchString(text) {
+			continue
+		}
+
+		// Skip auto-generated patterns.
+		if skipFirstPromptPattern.MatchString(text) {
+			continue
+		}
+
+		// Collapse newlines and trim.
+		text = strings.Join(strings.Fields(text), " ")
+		if text == "" {
+			continue
+		}
+
+		if len(text) > maxFirstPromptLen {
+			text = text[:maxFirstPromptLen]
+		}
+		return &text
+	}
+	return nil
+}
+
+// extractTextFromMessage returns the text content of a message.
+// For string content, returns it directly. For block content, returns
+// the first text block's text. Returns "" if the content is only tool_result blocks.
+func extractTextFromMessage(msg map[string]any) string {
+	content, ok := msg["content"]
+	if !ok {
+		return ""
+	}
+
+	// String content.
+	if s, ok := content.(string); ok {
+		return s
+	}
+
+	// Block content — extract first text block, but skip if only tool_result.
+	blocks, ok := content.([]any)
+	if !ok {
+		return ""
+	}
+
+	hasNonToolResult := false
+	var firstText string
+	for _, block := range blocks {
+		b, ok := block.(map[string]any)
+		if !ok {
+			continue
+		}
+		typ, _ := b["type"].(string)
+		if typ != "tool_result" {
+			hasNonToolResult = true
+		}
+		if typ == "text" && firstText == "" {
+			if t, ok := b["text"].(string); ok {
+				firstText = t
+			}
+		}
+	}
+
+	if !hasNonToolResult {
+		return "" // skip tool_result-only messages
+	}
+	return firstText
+}
+
+// parseJSONLHeadTail reads the first and last bufSize bytes of a JSONL file,
+// parsing complete lines from each chunk. For files smaller than 2*bufSize,
+// the entire file is read (equivalent to parseJSONLFile).
+//
+// This is used for metadata extraction (ListSessions, GetSessionInfo) where
+// reading the full file is unnecessary — session metadata is in the head
+// (timestamps, cwd, gitBranch, first_prompt) and tail (titles, tags).
+func parseJSONLHeadTail(path string, bufSize int64) (entries []jsonlEntry, err error) {
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("closing session file: %w", cerr)
+		}
+	}()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	fileSize := fi.Size()
+
+	// Small file — read everything.
+	if fileSize <= 2*bufSize {
+		return parseJSONLFromReader(f)
+	}
+
+	// Read head chunk.
+	headBuf := make([]byte, bufSize)
+	n, err := f.Read(headBuf)
+	if err != nil {
+		return nil, fmt.Errorf("reading head: %w", err)
+	}
+	headBuf = headBuf[:n]
+
+	// Parse complete lines from head (discard last partial line).
+	entries = parseLinesFromBytes(headBuf, true)
+
+	// Read tail chunk.
+	tailOffset := fileSize - bufSize
+	if _, err := f.Seek(tailOffset, 0); err != nil {
+		return nil, fmt.Errorf("seeking to tail: %w", err)
+	}
+	tailBuf := make([]byte, bufSize)
+	n, err = f.Read(tailBuf)
+	if err != nil {
+		return nil, fmt.Errorf("reading tail: %w", err)
+	}
+	tailBuf = tailBuf[:n]
+
+	// Parse complete lines from tail (discard first partial line).
+	tailEntries := parseLinesFromBytes(tailBuf, false)
+	entries = append(entries, tailEntries...)
+
+	return entries, nil
+}
+
+// parseJSONLFromReader reads all lines from an already-opened file.
+func parseJSONLFromReader(f *os.File) ([]jsonlEntry, error) {
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	var entries []jsonlEntry
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(line, &raw); err != nil {
+			continue
+		}
+		typ, _ := raw["type"].(string)
+		entries = append(entries, jsonlEntry{entryType: typ, raw: raw})
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scanning JSONL file: %w", err)
+	}
+	return entries, nil
+}
+
+// parseLinesFromBytes parses complete JSONL lines from a byte buffer.
+// If isHead is true, discards the last partial line (tail of head chunk).
+// If isHead is false, discards the first partial line (start of tail chunk).
+func parseLinesFromBytes(buf []byte, isHead bool) []jsonlEntry {
+	var entries []jsonlEntry
+	start := 0
+
+	if !isHead {
+		// Skip first partial line in tail chunk.
+		idx := bytes.IndexByte(buf, '\n')
+		if idx < 0 {
+			return nil // no complete line
+		}
+		start = idx + 1
+	}
+
+	for start < len(buf) {
+		end := start + bytes.IndexByte(buf[start:], '\n')
+		if end < start {
+			// No newline found — this is the last (potentially partial) line.
+			if isHead {
+				break // discard partial last line in head
+			}
+			end = len(buf)
+		}
+
+		line := buf[start:end]
+		start = end + 1
+
+		if len(line) == 0 {
+			continue
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(line, &raw); err != nil {
+			continue
+		}
+		typ, _ := raw["type"].(string)
+		entries = append(entries, jsonlEntry{entryType: typ, raw: raw})
+	}
+	return entries
+}
+
 // buildSessionInfo constructs SDKSessionInfo from parsed JSONL entries.
 func buildSessionInfo(sessionID string, entries []jsonlEntry, fileInfo os.FileInfo) *SDKSessionInfo {
 	info := &SDKSessionInfo{
@@ -419,7 +662,7 @@ func buildSessionInfo(sessionID string, entries []jsonlEntry, fileInfo os.FileIn
 					info.Tag = &tag
 				}
 			}
-		case "user":
+		case entryTypeUser:
 			// Track cwd and gitBranch (last one wins)
 			if branch, ok := e.raw["gitBranch"].(string); ok && branch != "" {
 				info.GitBranch = &branch
@@ -440,12 +683,16 @@ func buildSessionInfo(sessionID string, entries []jsonlEntry, fileInfo os.FileIn
 		}
 	}
 
-	// Summary priority: custom_title > ai_title > timestamp fallback
+	info.FirstPrompt = extractFirstPrompt(entries)
+
+	// Summary priority: custom_title > ai_title > first_prompt > timestamp fallback
 	switch {
 	case info.CustomTitle != nil:
 		info.Summary = *info.CustomTitle
 	case info.AITitle != nil:
 		info.Summary = *info.AITitle
+	case info.FirstPrompt != nil:
+		info.Summary = *info.FirstPrompt
 	case info.CreatedAt != nil:
 		info.Summary = fmt.Sprintf("New session - %s", time.UnixMilli(*info.CreatedAt).UTC().Format(time.RFC3339))
 	default:
@@ -534,14 +781,217 @@ func parseContentBlock(raw map[string]any) ContentBlock {
 	return cb
 }
 
+// Entry type constants for JSONL entries.
+const (
+	entryTypeUser      = "user"
+	entryTypeAssistant = "assistant"
+)
+
+// transcriptEntryTypes are the JSONL entry types that carry uuid + parentUuid
+// chain links, matching the Python SDK's _TRANSCRIPT_ENTRY_TYPES.
+var transcriptEntryTypes = map[string]bool{
+	entryTypeUser: true, entryTypeAssistant: true, "progress": true, "system": true, "attachment": true,
+}
+
+// isTranscriptEntry returns true if the entry is a transcript message type with a uuid.
+func isTranscriptEntry(e jsonlEntry) bool {
+	if !transcriptEntryTypes[e.entryType] {
+		return false
+	}
+	uuid, _ := e.raw["uuid"].(string)
+	return uuid != ""
+}
+
+// isVisibleMessage returns true if the entry should be included in returned messages.
+// Matches the Python SDK's _is_visible_message filter.
+func isVisibleMessage(e jsonlEntry) bool {
+	if e.entryType != entryTypeUser && e.entryType != entryTypeAssistant {
+		return false
+	}
+	if meta, ok := e.raw["isMeta"].(bool); ok && meta {
+		return false
+	}
+	if sc, ok := e.raw["isSidechain"].(bool); ok && sc {
+		return false
+	}
+	if tn, ok := e.raw["teamName"].(string); ok && tn != "" {
+		return false
+	}
+	return true
+}
+
+// entryUUID returns the uuid of a JSONL entry, or "".
+func entryUUID(e jsonlEntry) string {
+	uuid, _ := e.raw["uuid"].(string)
+	return uuid
+}
+
+// entryParentUUID returns the parentUuid of a JSONL entry, or "".
+func entryParentUUID(e jsonlEntry) string {
+	parent, _ := e.raw["parentUuid"].(string)
+	return parent
+}
+
+// buildConversationChain reconstructs the main conversation chain from transcript
+// entries by walking parentUuid links, matching the Python SDK's _build_conversation_chain.
+//
+// Algorithm:
+//  1. Index transcript entries by uuid
+//  2. Find terminals (entries with no children)
+//  3. From each terminal, walk back to find the nearest user/assistant leaf
+//  4. Pick the best leaf: not sidechain/teamName/isMeta, highest file position
+//  5. Walk from leaf to root via parentUuid, reverse to chronological order
+func buildConversationChain(transcriptEntries []jsonlEntry, byUUID map[string]int) []jsonlEntry {
+	if len(transcriptEntries) == 0 {
+		return nil
+	}
+
+	// Build parent→children map to find terminals.
+	childrenOf := make(map[string]bool, len(transcriptEntries))
+	for _, e := range transcriptEntries {
+		if parent := entryParentUUID(e); parent != "" {
+			childrenOf[parent] = true
+		}
+	}
+
+	// Find terminals: entries whose uuid is not a parent of any other entry.
+	var terminals []int
+	for i, e := range transcriptEntries {
+		if !childrenOf[entryUUID(e)] {
+			terminals = append(terminals, i)
+		}
+	}
+
+	// From each terminal, walk back via parentUuid to find nearest user/assistant leaf.
+	type leaf struct {
+		idx         int
+		isSidechain bool
+		isTeamName  bool
+		isMeta      bool
+	}
+	var leaves []leaf
+	for _, termIdx := range terminals {
+		seen := make(map[string]bool)
+		cur := termIdx
+		for cur >= 0 {
+			uuid := entryUUID(transcriptEntries[cur])
+			if seen[uuid] {
+				break
+			}
+			seen[uuid] = true
+			e := transcriptEntries[cur]
+			if e.entryType == entryTypeUser || e.entryType == entryTypeAssistant {
+				sc, _ := e.raw["isSidechain"].(bool)
+				tn, _ := e.raw["teamName"].(string)
+				meta, _ := e.raw["isMeta"].(bool)
+				leaves = append(leaves, leaf{idx: cur, isSidechain: sc, isTeamName: tn != "", isMeta: meta})
+				break
+			}
+			parent := entryParentUUID(e)
+			if parent == "" {
+				break
+			}
+			parentIdx, ok := byUUID[parent]
+			if !ok {
+				break
+			}
+			cur = parentIdx
+		}
+	}
+
+	if len(leaves) == 0 {
+		return nil
+	}
+
+	// Pick the best leaf: prefer non-sidechain/non-teamName/non-meta, highest file position.
+	var mainLeaves []leaf
+	for _, l := range leaves {
+		if !l.isSidechain && !l.isTeamName && !l.isMeta {
+			mainLeaves = append(mainLeaves, l)
+		}
+	}
+	candidates := mainLeaves
+	if len(candidates) == 0 {
+		candidates = leaves
+	}
+	best := candidates[0]
+	for _, c := range candidates[1:] {
+		if c.idx > best.idx {
+			best = c
+		}
+	}
+
+	// Walk from best leaf to root via parentUuid.
+	var chain []jsonlEntry
+	seen := make(map[string]bool)
+	cur := best.idx
+	for cur >= 0 {
+		e := transcriptEntries[cur]
+		uuid := entryUUID(e)
+		if seen[uuid] {
+			break
+		}
+		seen[uuid] = true
+		chain = append(chain, e)
+		parent := entryParentUUID(e)
+		if parent == "" {
+			break
+		}
+		parentIdx, ok := byUUID[parent]
+		if !ok {
+			break
+		}
+		cur = parentIdx
+	}
+
+	// Reverse to chronological order.
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+
+	return chain
+}
+
 // buildMessages extracts user and assistant messages from JSONL entries.
+// If entries contain parentUuid fields, it reconstructs the conversation chain.
+// Otherwise, it falls back to a flat scan with visibility filtering.
 func buildMessages(sessionID string, entries []jsonlEntry) []Message {
-	var messages []Message
+	// Check if any entry has parentUuid — determines chain vs flat-scan path.
+	hasParentUUID := false
+	var transcriptEntries []jsonlEntry
+	byUUID := make(map[string]int)
+
 	for _, e := range entries {
-		if e.entryType != "user" && e.entryType != "assistant" {
+		if !isTranscriptEntry(e) {
 			continue
 		}
+		idx := len(transcriptEntries)
+		transcriptEntries = append(transcriptEntries, e)
+		byUUID[entryUUID(e)] = idx
+		if entryParentUUID(e) != "" {
+			hasParentUUID = true
+		}
+	}
 
+	var visible []jsonlEntry
+	if hasParentUUID {
+		chain := buildConversationChain(transcriptEntries, byUUID)
+		for _, e := range chain {
+			if isVisibleMessage(e) {
+				visible = append(visible, e)
+			}
+		}
+	} else {
+		// Flat-scan fallback for sessions without parentUuid.
+		for _, e := range entries {
+			if isVisibleMessage(e) {
+				visible = append(visible, e)
+			}
+		}
+	}
+
+	messages := make([]Message, 0, len(visible))
+	for _, e := range visible {
 		msg := Message{
 			Type:      e.entryType,
 			SessionID: sessionID,

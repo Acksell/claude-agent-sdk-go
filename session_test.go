@@ -35,7 +35,7 @@ func testEncodeCwd(cwd string) string {
 	var b []byte
 	for _, r := range cwd {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			b = append(b, byte(r))
+			b = append(b, byte(r)) //nolint:gosec // r is guaranteed alphanumeric (ASCII range)
 		} else {
 			b = append(b, '-')
 		}
@@ -46,8 +46,8 @@ func testEncodeCwd(cwd string) string {
 // writeTestSession writes a session JSONL file with the given entries.
 func writeTestSession(t *testing.T, dir, sessionID string, entries []map[string]any) {
 	t.Helper()
-	path := filepath.Join(dir, sessionID+".jsonl")
-	f, err := os.Create(path)
+	path := filepath.Clean(filepath.Join(dir, sessionID+".jsonl"))
+	f, err := os.Create(path) //nolint:gosec // path is constructed from test temp dir
 	if err != nil {
 		t.Fatalf("creating session file: %v", err)
 	}
@@ -124,8 +124,8 @@ func TestPublicGetSessionInfo(t *testing.T) {
 	if info == nil {
 		t.Fatal("expected non-nil info")
 	}
-	// Summary falls back to timestamp when no custom title is set.
-	want := "New session - 2026-03-01T00:00:00Z"
+	// Summary uses first_prompt when no custom/AI title is set.
+	want := "Test prompt"
 	if info.Summary != want {
 		t.Errorf("Summary = %q, want %q", info.Summary, want)
 	}

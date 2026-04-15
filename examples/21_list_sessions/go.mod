@@ -1,4 +1,4 @@
-module 02_client_streaming
+module 21_list_sessions
 
 go 1.18
 
