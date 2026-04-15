@@ -158,6 +158,8 @@ func WithSessionOffset(n int) Option {
 }
 
 // ListSessions returns metadata for sessions, sorted by LastModified descending.
+// Unreadable project directories and individual session files are silently skipped
+// to provide best-effort results (matches the Python SDK's behavior).
 func ListSessions(opts ...Option) ([]SDKSessionInfo, error) {
 	o := defaultOpts()
 	for _, fn := range opts {
@@ -307,6 +309,8 @@ func projectDirsForOpts(o sessionOpts) ([]string, error) {
 }
 
 // listSessionsInDir lists all sessions in a single project directory.
+// Individual session files that fail to parse (corrupt JSONL, permission errors)
+// are silently skipped to provide best-effort results.
 func listSessionsInDir(dir string) ([]SDKSessionInfo, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -641,58 +645,68 @@ func parseLinesFromBytes(buf []byte, isHead bool) []jsonlEntry {
 	return entries
 }
 
-// buildSessionInfo constructs SDKSessionInfo from parsed JSONL entries.
-func buildSessionInfo(sessionID string, entries []jsonlEntry, fileInfo os.FileInfo) *SDKSessionInfo {
-	info := &SDKSessionInfo{
-		SessionID:    sessionID,
-		LastModified: fileInfo.ModTime().UnixMilli(),
-	}
-
-	fileSize := fileInfo.Size()
-	info.FileSize = &fileSize
-
+// extractMetadataFromEntries populates session metadata fields by scanning JSONL entries.
+// Extracts titles, tags, cwd, gitBranch, and createdAt timestamp.
+func extractMetadataFromEntries(info *SDKSessionInfo, entries []jsonlEntry) {
 	for _, e := range entries {
-		switch e.entryType {
-		case "custom-title":
-			if title, ok := e.raw["customTitle"].(string); ok && title != "" {
-				info.CustomTitle = &title
-			}
-		case "ai-title":
-			if title, ok := e.raw["aiTitle"].(string); ok && title != "" {
-				info.AITitle = &title
-			}
-		case "tag":
-			if tag, ok := e.raw["tag"].(string); ok {
-				if tag == "" {
-					info.Tag = nil // cleared
-				} else {
-					info.Tag = &tag
-				}
-			}
-		case entryTypeUser:
-			// Track cwd and gitBranch (last one wins)
-			if branch, ok := e.raw["gitBranch"].(string); ok && branch != "" {
-				info.GitBranch = &branch
-			}
-			if cwd, ok := e.raw["cwd"].(string); ok && cwd != "" {
-				info.Cwd = &cwd
+		extractEntryMetadata(info, e)
+	}
+	info.FirstPrompt = extractFirstPrompt(entries)
+}
+
+// extractEntryMetadata extracts metadata from a single JSONL entry into info.
+func extractEntryMetadata(info *SDKSessionInfo, e jsonlEntry) {
+	switch e.entryType {
+	case "custom-title":
+		if title, ok := e.raw["customTitle"].(string); ok && title != "" {
+			info.CustomTitle = &title
+		}
+	case "ai-title":
+		if title, ok := e.raw["aiTitle"].(string); ok && title != "" {
+			info.AITitle = &title
+		}
+	case "tag":
+		if tag, ok := e.raw["tag"].(string); ok {
+			if tag == "" {
+				info.Tag = nil // cleared
+			} else {
+				info.Tag = &tag
 			}
 		}
-
-		// CreatedAt from first entry with a timestamp
-		if info.CreatedAt == nil {
-			if ts, ok := e.raw["timestamp"].(string); ok && ts != "" {
-				if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
-					ms := t.UnixMilli()
-					info.CreatedAt = &ms
-				}
-			}
+	case entryTypeUser:
+		// Track cwd and gitBranch (last one wins)
+		if branch, ok := e.raw["gitBranch"].(string); ok && branch != "" {
+			info.GitBranch = &branch
+		}
+		if cwd, ok := e.raw["cwd"].(string); ok && cwd != "" {
+			info.Cwd = &cwd
 		}
 	}
 
-	info.FirstPrompt = extractFirstPrompt(entries)
+	extractCreatedAt(info, e)
+}
 
-	// Summary priority: custom_title > ai_title > first_prompt > timestamp fallback
+// extractCreatedAt sets CreatedAt from the first entry that carries a valid
+// RFC3339 timestamp. Once set, subsequent calls are no-ops.
+func extractCreatedAt(info *SDKSessionInfo, e jsonlEntry) {
+	if info.CreatedAt != nil {
+		return
+	}
+	ts, ok := e.raw["timestamp"].(string)
+	if !ok || ts == "" {
+		return
+	}
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return
+	}
+	ms := t.UnixMilli()
+	info.CreatedAt = &ms
+}
+
+// determineSummary sets the Summary field based on available metadata.
+// Priority: custom_title > ai_title > first_prompt > timestamp fallback > session ID.
+func determineSummary(info *SDKSessionInfo) {
 	switch {
 	case info.CustomTitle != nil:
 		info.Summary = *info.CustomTitle
@@ -703,8 +717,22 @@ func buildSessionInfo(sessionID string, entries []jsonlEntry, fileInfo os.FileIn
 	case info.CreatedAt != nil:
 		info.Summary = fmt.Sprintf("New session - %s", time.UnixMilli(*info.CreatedAt).UTC().Format(time.RFC3339))
 	default:
-		info.Summary = sessionID
+		info.Summary = info.SessionID
 	}
+}
+
+// buildSessionInfo constructs SDKSessionInfo from parsed JSONL entries.
+func buildSessionInfo(sessionID string, entries []jsonlEntry, fileInfo os.FileInfo) *SDKSessionInfo {
+	info := &SDKSessionInfo{
+		SessionID:    sessionID,
+		LastModified: fileInfo.ModTime().UnixMilli(),
+	}
+
+	fileSize := fileInfo.Size()
+	info.FileSize = &fileSize
+
+	extractMetadataFromEntries(info, entries)
+	determineSummary(info)
 
 	return info
 }
@@ -839,21 +867,18 @@ func entryParentUUID(e jsonlEntry) string {
 	return parent
 }
 
-// buildConversationChain reconstructs the main conversation chain from transcript
-// entries by walking parentUuid links, matching the Python SDK's _build_conversation_chain.
-//
-// Algorithm:
-//  1. Index transcript entries by uuid
-//  2. Find terminals (entries with no children)
-//  3. From each terminal, walk back to find the nearest user/assistant leaf
-//  4. Pick the best leaf: not sidechain/teamName/isMeta, highest file position
-//  5. Walk from leaf to root via parentUuid, reverse to chronological order
-func buildConversationChain(transcriptEntries []jsonlEntry, byUUID map[string]int) []jsonlEntry {
-	if len(transcriptEntries) == 0 {
-		return nil
-	}
+// leaf represents a user/assistant entry at the end of a conversation branch,
+// used during chain reconstruction to pick the best (main) conversation path.
+type leaf struct {
+	idx         int
+	isSidechain bool
+	isTeamName  bool
+	isMeta      bool
+}
 
-	// Build parent→children map to find terminals.
+// findTerminals returns the indices of transcript entries that have no children
+// (i.e., no other entry lists their uuid as a parentUuid).
+func findTerminals(transcriptEntries []jsonlEntry) []int {
 	childrenOf := make(map[string]bool, len(transcriptEntries))
 	for _, e := range transcriptEntries {
 		if parent := entryParentUUID(e); parent != "" {
@@ -861,56 +886,62 @@ func buildConversationChain(transcriptEntries []jsonlEntry, byUUID map[string]in
 		}
 	}
 
-	// Find terminals: entries whose uuid is not a parent of any other entry.
 	var terminals []int
 	for i, e := range transcriptEntries {
 		if !childrenOf[entryUUID(e)] {
 			terminals = append(terminals, i)
 		}
 	}
+	return terminals
+}
 
-	// From each terminal, walk back via parentUuid to find nearest user/assistant leaf.
-	type leaf struct {
-		idx         int
-		isSidechain bool
-		isTeamName  bool
-		isMeta      bool
-	}
+// findLeaves walks back from each terminal via parentUuid to find the nearest
+// user/assistant entry, collecting metadata about sidechain/teamName/isMeta status.
+func findLeaves(transcriptEntries []jsonlEntry, terminals []int, byUUID map[string]int) []leaf {
 	var leaves []leaf
 	for _, termIdx := range terminals {
-		seen := make(map[string]bool)
-		cur := termIdx
-		for cur >= 0 {
-			uuid := entryUUID(transcriptEntries[cur])
-			if seen[uuid] {
-				break
-			}
-			seen[uuid] = true
-			e := transcriptEntries[cur]
-			if e.entryType == entryTypeUser || e.entryType == entryTypeAssistant {
-				sc, _ := e.raw["isSidechain"].(bool)
-				tn, _ := e.raw["teamName"].(string)
-				meta, _ := e.raw["isMeta"].(bool)
-				leaves = append(leaves, leaf{idx: cur, isSidechain: sc, isTeamName: tn != "", isMeta: meta})
-				break
-			}
-			parent := entryParentUUID(e)
-			if parent == "" {
-				break
-			}
-			parentIdx, ok := byUUID[parent]
-			if !ok {
-				break
-			}
-			cur = parentIdx
+		if l, ok := walkToLeaf(transcriptEntries, termIdx, byUUID); ok {
+			leaves = append(leaves, l)
 		}
 	}
+	return leaves
+}
 
-	if len(leaves) == 0 {
-		return nil
+// walkToLeaf walks backwards from a terminal entry via parentUuid links until it
+// finds a user or assistant entry, returning it as a leaf. Returns ok=false if
+// no qualifying entry is found.
+func walkToLeaf(transcriptEntries []jsonlEntry, startIdx int, byUUID map[string]int) (leaf, bool) {
+	seen := make(map[string]bool)
+	cur := startIdx
+	for cur >= 0 {
+		uuid := entryUUID(transcriptEntries[cur])
+		if seen[uuid] {
+			break
+		}
+		seen[uuid] = true
+		e := transcriptEntries[cur]
+		if e.entryType == entryTypeUser || e.entryType == entryTypeAssistant {
+			sc, _ := e.raw["isSidechain"].(bool)
+			tn, _ := e.raw["teamName"].(string)
+			meta, _ := e.raw["isMeta"].(bool)
+			return leaf{idx: cur, isSidechain: sc, isTeamName: tn != "", isMeta: meta}, true
+		}
+		parent := entryParentUUID(e)
+		if parent == "" {
+			break
+		}
+		parentIdx, ok := byUUID[parent]
+		if !ok {
+			break
+		}
+		cur = parentIdx
 	}
+	return leaf{}, false
+}
 
-	// Pick the best leaf: prefer non-sidechain/non-teamName/non-meta, highest file position.
+// pickBestLeaf selects the best leaf from candidates: prefers entries that are
+// not sidechain/teamName/isMeta, breaking ties by highest file position (index).
+func pickBestLeaf(leaves []leaf) leaf {
 	var mainLeaves []leaf
 	for _, l := range leaves {
 		if !l.isSidechain && !l.isTeamName && !l.isMeta {
@@ -927,11 +958,16 @@ func buildConversationChain(transcriptEntries []jsonlEntry, byUUID map[string]in
 			best = c
 		}
 	}
+	return best
+}
 
-	// Walk from best leaf to root via parentUuid.
+// walkChainToRoot walks from the entry at startIdx to the root via parentUuid
+// links, collecting entries along the way. Returns entries in chronological order
+// (root first).
+func walkChainToRoot(transcriptEntries []jsonlEntry, startIdx int, byUUID map[string]int) []jsonlEntry {
 	var chain []jsonlEntry
 	seen := make(map[string]bool)
-	cur := best.idx
+	cur := startIdx
 	for cur >= 0 {
 		e := transcriptEntries[cur]
 		uuid := entryUUID(e)
@@ -955,8 +991,31 @@ func buildConversationChain(transcriptEntries []jsonlEntry, byUUID map[string]in
 	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
 		chain[i], chain[j] = chain[j], chain[i]
 	}
-
 	return chain
+}
+
+// buildConversationChain reconstructs the main conversation chain from transcript
+// entries by walking parentUuid links, matching the Python SDK's _build_conversation_chain.
+//
+// Algorithm:
+//  1. Index transcript entries by uuid
+//  2. Find terminals (entries with no children)
+//  3. From each terminal, walk back to find the nearest user/assistant leaf
+//  4. Pick the best leaf: not sidechain/teamName/isMeta, highest file position
+//  5. Walk from leaf to root via parentUuid, reverse to chronological order
+func buildConversationChain(transcriptEntries []jsonlEntry, byUUID map[string]int) []jsonlEntry {
+	if len(transcriptEntries) == 0 {
+		return nil
+	}
+
+	terminals := findTerminals(transcriptEntries)
+	leaves := findLeaves(transcriptEntries, terminals, byUUID)
+	if len(leaves) == 0 {
+		return nil
+	}
+
+	best := pickBestLeaf(leaves)
+	return walkChainToRoot(transcriptEntries, best.idx, byUUID)
 }
 
 // buildMessages extracts user and assistant messages from JSONL entries.
