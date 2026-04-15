@@ -65,8 +65,8 @@ func TestPublicListSessions(t *testing.T) {
 		t.Fatalf("got %d sessions, want 2", len(sessions))
 	}
 	// Verify type is accessible as SDKSessionInfo
-	var _ string = sessions[0].Summary
-	var _ string = sessions[0].SessionID
+	var _ = sessions[0].Summary
+	var _ = sessions[0].SessionID
 }
 
 func TestPublicGetSessionMessages(t *testing.T) {
@@ -85,8 +85,8 @@ func TestPublicGetSessionMessages(t *testing.T) {
 		t.Fatalf("got %d messages, want 2", len(msgs))
 	}
 	// Verify type is accessible as SessionMessage
-	var _ string = msgs[0].Type
-	var _ string = msgs[0].UUID
+	var _ = msgs[0].Type
+	var _ = msgs[0].UUID
 }
 
 func TestPublicGetSessionInfo(t *testing.T) {

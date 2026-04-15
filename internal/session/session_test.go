@@ -7,6 +7,12 @@ import (
 	"testing"
 )
 
+// Test constants for repeated string literals (goconst).
+const (
+	roleUser      = "user"
+	roleAssistant = "assistant"
+)
+
 func TestEncodeCwd(t *testing.T) {
 	tests := []struct {
 		name string
@@ -185,14 +191,14 @@ func TestGetMessages(t *testing.T) {
 		if len(msgs) != 3 {
 			t.Fatalf("got %d messages, want 3", len(msgs))
 		}
-		if msgs[0].Type != "user" {
-			t.Errorf("msgs[0].Type = %q, want %q", msgs[0].Type, "user")
+		if msgs[0].Type != roleUser {
+			t.Errorf("msgs[0].Type = %q, want %q", msgs[0].Type, roleUser)
 		}
-		if msgs[1].Type != "assistant" {
-			t.Errorf("msgs[1].Type = %q, want %q", msgs[1].Type, "assistant")
+		if msgs[1].Type != roleAssistant {
+			t.Errorf("msgs[1].Type = %q, want %q", msgs[1].Type, roleAssistant)
 		}
-		if msgs[2].Type != "user" {
-			t.Errorf("msgs[2].Type = %q, want %q", msgs[2].Type, "user")
+		if msgs[2].Type != roleUser {
+			t.Errorf("msgs[2].Type = %q, want %q", msgs[2].Type, roleUser)
 		}
 	})
 
@@ -233,8 +239,8 @@ func TestGetMessages(t *testing.T) {
 		if len(msgs) != 2 {
 			t.Fatalf("got %d messages, want 2", len(msgs))
 		}
-		if msgs[0].Type != "assistant" {
-			t.Errorf("msgs[0].Type = %q, want %q (after offset=1)", msgs[0].Type, "assistant")
+		if msgs[0].Type != roleAssistant {
+			t.Errorf("msgs[0].Type = %q, want %q (after offset=1)", msgs[0].Type, roleAssistant)
 		}
 	})
 
