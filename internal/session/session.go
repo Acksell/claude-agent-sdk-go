@@ -116,16 +116,13 @@ type SessionMessage struct {
 type SessionOption func(*sessionOpts)
 
 type sessionOpts struct {
-	directory        string
-	limit            int
-	offset           int
-	includeWorktrees bool
+	directory string
+	limit     int
+	offset    int
 }
 
 func defaultOpts() sessionOpts {
-	return sessionOpts{
-		includeWorktrees: true,
-	}
+	return sessionOpts{}
 }
 
 // WithSessionDirectory scopes the query to a specific project directory.
@@ -147,14 +144,6 @@ func WithSessionLimit(n int) SessionOption {
 func WithSessionOffset(n int) SessionOption {
 	return func(o *sessionOpts) {
 		o.offset = n
-	}
-}
-
-// WithIncludeWorktrees controls whether sessions from git worktree paths
-// are included when directory is inside a git repository. Default is true.
-func WithIncludeWorktrees(include bool) SessionOption {
-	return func(o *sessionOpts) {
-		o.includeWorktrees = include
 	}
 }
 

@@ -56,10 +56,6 @@ var WithSessionLimit = session.WithSessionLimit
 // WithSessionOffset skips the first n messages (GetSessionMessages only).
 var WithSessionOffset = session.WithSessionOffset
 
-// WithIncludeWorktrees controls whether sessions from git worktree paths
-// are included when directory is inside a git repository. Default is true.
-var WithIncludeWorktrees = session.WithIncludeWorktrees
-
 // ListSessions returns metadata for sessions, sorted by LastModified descending.
 // Use WithSessionDirectory to scope to a specific project, or omit to list all.
 //
