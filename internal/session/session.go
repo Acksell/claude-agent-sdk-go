@@ -342,9 +342,7 @@ func projectDirsForOpts(o sessionOpts) ([]string, error) {
 		// Collect all candidate directories: user's dir first, then worktrees.
 		candidatePaths := []string{abs}
 		if o.includeWorktreesEnabled() {
-			for _, wt := range getWorktreePaths(abs) {
-				candidatePaths = append(candidatePaths, wt)
-			}
+			candidatePaths = append(candidatePaths, getWorktreePaths(abs)...)
 		}
 
 		// Encode each candidate path and collect existing project dirs.
