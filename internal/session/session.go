@@ -365,19 +365,30 @@ func projectDirsForOpts(o sessionOpts) ([]string, error) {
 		return dirs, nil
 	}
 
-	// List all project directories
-	entries, err := os.ReadDir(projectsDir)
+	// List all project directories.
+	f, err := os.Open(projectsDir) // instead of os.ReadDir, due to vulnerability GO-2026-4602 https://pkg.go.dev/vuln/GO-2026-4602
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("reading projects directory: %w", err)
 	}
+	defer f.Close()
+
+	names, err := f.Readdirnames(-1)
+	if err != nil {
+		return nil, fmt.Errorf("reading projects directory: %w", err)
+	}
 
 	var dirs []string
-	for _, e := range entries {
-		if e.IsDir() {
-			dirs = append(dirs, filepath.Join(projectsDir, e.Name()))
+	for _, name := range names {
+		full := filepath.Join(projectsDir, name)
+		fi, err := os.Stat(full)
+		if err != nil {
+			continue
+		}
+		if fi.IsDir() {
+			dirs = append(dirs, full)
 		}
 	}
 	return dirs, nil
@@ -406,15 +417,20 @@ func deduplicateBySessionID(sessions []SDKSessionInfo) []SDKSessionInfo {
 // Individual session files that fail to parse (corrupt JSONL, permission errors)
 // are silently skipped to provide best-effort results.
 func listSessionsInDir(dir string) ([]SDKSessionInfo, error) {
-	entries, err := os.ReadDir(dir)
+	f, err := os.Open(dir) // instead of os.ReadDir, due to vulnerability GO-2026-4602 https://pkg.go.dev/vuln/GO-2026-4602
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	names, err := f.Readdirnames(-1)
 	if err != nil {
 		return nil, err
 	}
 
 	var sessions []SDKSessionInfo
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".jsonl") {
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".jsonl") {
 			continue
 		}
 		sessionID := strings.TrimSuffix(name, ".jsonl")
