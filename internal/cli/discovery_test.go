@@ -1698,3 +1698,122 @@ func createVersionMockCLI(t *testing.T, version string) string {
 	}
 	return mockCLI
 }
+
+// TestSkillsFlagSupport tests that the Skills option transforms AllowedTools
+// and defaults SettingSources, matching the Python SDK's _apply_skills_defaults.
+func TestSkillsFlagSupport(t *testing.T) {
+	tests := []struct {
+		name     string
+		options  *shared.Options
+		validate func(*testing.T, []string)
+	}{
+		{
+			name:     "skills_all_adds_skill_tool",
+			options:  &shared.Options{Skills: shared.SkillsAll},
+			validate: validateSkillsAll,
+		},
+		{
+			name: "skills_list_adds_scoped_skill_tools",
+			options: &shared.Options{
+				Skills: []string{"pdf", "docx"},
+			},
+			validate: validateSkillsList,
+		},
+		{
+			name:     "skills_disabled_does_not_add_skill_tool",
+			options:  &shared.Options{Skills: []string{}},
+			validate: validateSkillsDisabled,
+		},
+		{
+			name: "skills_defaults_setting_sources_to_user_project",
+			options: &shared.Options{
+				Skills: shared.SkillsAll,
+			},
+			validate: validateSkillsDefaultsSettingSources,
+		},
+		{
+			name: "skills_does_not_override_explicit_setting_sources",
+			options: &shared.Options{
+				Skills:         shared.SkillsAll,
+				SettingSources: []shared.SettingSource{shared.SettingSourceLocal},
+			},
+			validate: validateSkillsPreservesSettingSources,
+		},
+		{
+			name: "skills_all_does_not_duplicate_existing_skill_tool",
+			options: &shared.Options{
+				AllowedTools: []string{"Skill", "Read"},
+				Skills:       shared.SkillsAll,
+			},
+			validate: validateSkillsNoDuplicate,
+		},
+		{
+			name: "skills_preserves_existing_allowed_tools",
+			options: &shared.Options{
+				AllowedTools: []string{"Read", "Write"},
+				Skills:       []string{"pdf"},
+			},
+			validate: validateSkillsPreservesAllowedTools,
+		},
+		{
+			name:     "skills_nil_is_noop",
+			options:  &shared.Options{AllowedTools: []string{"Read"}},
+			validate: validateSkillsNoop,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := BuildCommand("/usr/local/bin/claude", test.options, true)
+			test.validate(t, cmd)
+		})
+	}
+}
+
+func validateSkillsAll(t *testing.T, cmd []string) {
+	t.Helper()
+	assertContainsArgs(t, cmd, "--allowed-tools", "Skill")
+}
+
+func validateSkillsList(t *testing.T, cmd []string) {
+	t.Helper()
+	assertContainsArgs(t, cmd, "--allowed-tools", "Skill(pdf),Skill(docx)")
+}
+
+func validateSkillsDisabled(t *testing.T, cmd []string) {
+	t.Helper()
+	for i, arg := range cmd {
+		if arg == "--allowed-tools" && i+1 < len(cmd) {
+			if strings.Contains(cmd[i+1], "Skill") {
+				t.Errorf("Expected no Skill tool in --allowed-tools, got %q", cmd[i+1])
+			}
+		}
+	}
+}
+
+func validateSkillsDefaultsSettingSources(t *testing.T, cmd []string) {
+	t.Helper()
+	assertContainsArgs(t, cmd, "--setting-sources", "user,project")
+}
+
+func validateSkillsPreservesSettingSources(t *testing.T, cmd []string) {
+	t.Helper()
+	assertContainsArgs(t, cmd, "--setting-sources", "local")
+}
+
+func validateSkillsNoDuplicate(t *testing.T, cmd []string) {
+	t.Helper()
+	assertContainsArgs(t, cmd, "--allowed-tools", "Skill,Read")
+}
+
+func validateSkillsPreservesAllowedTools(t *testing.T, cmd []string) {
+	t.Helper()
+	assertContainsArgs(t, cmd, "--allowed-tools", "Read,Write,Skill(pdf)")
+}
+
+func validateSkillsNoop(t *testing.T, cmd []string) {
+	t.Helper()
+	// AllowedTools unchanged; SettingSources stays at the global default (empty).
+	assertContainsArgs(t, cmd, "--allowed-tools", "Read")
+	assertContainsArgs(t, cmd, "--setting-sources", "")
+}

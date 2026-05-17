@@ -439,7 +439,6 @@ func createTransportTempScript(script, extension string) string {
 	return scriptPath
 }
 
-// Helper functions following client_test.go patterns
 func setupTransportTestContext(t *testing.T, timeout time.Duration) (context.Context, context.CancelFunc) {
 	t.Helper()
 	return context.WithTimeout(context.Background(), timeout)
@@ -663,10 +662,6 @@ func TestTransportInterruptErrorPaths(t *testing.T) {
 		})
 	}
 }
-
-// =============================================================================
-// Control Protocol Integration Tests
-// =============================================================================
 
 // TestTransportControlProtocolIntegration tests that SetModel and SetPermissionMode
 // work through the control protocol when properly wired.

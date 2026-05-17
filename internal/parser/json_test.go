@@ -14,7 +14,7 @@ const testResultAnswer42 = "The answer is 42"
 const validSystemStatusJSON = `{"type": "system", "subtype": "status"}`
 
 // TestParseValidMessages tests parsing of valid message types
-func TestParseValidMessages(t *testing.T) {
+func TestParseValidMessages(t *testing.T) { //nolint:gocyclo
 	tests := []struct {
 		name         string
 		data         map[string]any
@@ -42,7 +42,7 @@ func TestParseValidMessages(t *testing.T) {
 			},
 			expectedType: shared.MessageTypeUser,
 		},
-		// Issue #24: UUID and ParentToolUseID field tests
+		// UUID and ParentToolUseID field tests
 		{
 			name: "user_message_with_uuid",
 			data: map[string]any{
@@ -123,16 +123,46 @@ func TestParseValidMessages(t *testing.T) {
 				},
 			},
 			expectedType: shared.MessageTypeAssistant,
+			validate: func(t *testing.T, msg shared.Message) {
+				t.Helper()
+				am := msg.(*shared.AssistantMessage)
+				if am.ParentToolUseID != nil {
+					t.Errorf("expected ParentToolUseID nil, got %v", am.ParentToolUseID)
+				}
+			},
 		},
-		// Issue #23: AssistantMessage error field tests
+		{
+			name: "assistant_message_with_parent_tool_use_id",
+			data: map[string]any{
+				"type":               "assistant",
+				"parent_tool_use_id": "tool-abc",
+				"message": map[string]any{
+					"content": []any{map[string]any{"type": "text", "text": "Subagent reply"}},
+					"model":   "claude-3-sonnet",
+				},
+			},
+			expectedType: shared.MessageTypeAssistant,
+			validate: func(t *testing.T, msg shared.Message) {
+				t.Helper()
+				am := msg.(*shared.AssistantMessage)
+				if am.ParentToolUseID == nil || *am.ParentToolUseID != "tool-abc" {
+					t.Errorf("expected ParentToolUseID 'tool-abc', got %v", am.ParentToolUseID)
+				}
+				if am.GetParentToolUseID() != "tool-abc" {
+					t.Errorf("expected GetParentToolUseID() 'tool-abc', got %q", am.GetParentToolUseID())
+				}
+			},
+		},
+		// error field is at the top level of the event, not nested inside data["message"].
+		// CLI wire format: {"type":"assistant","error":"rate_limit","message":{...}}.
 		{
 			name: "assistant_message_with_rate_limit_error",
 			data: map[string]any{
-				"type": "assistant",
+				"type":  "assistant",
+				"error": "rate_limit",
 				"message": map[string]any{
 					"content": []any{map[string]any{"type": "text", "text": "Rate limited"}},
 					"model":   "claude-3-sonnet",
-					"error":   "rate_limit",
 				},
 			},
 			expectedType: shared.MessageTypeAssistant,
@@ -153,11 +183,11 @@ func TestParseValidMessages(t *testing.T) {
 		{
 			name: "assistant_message_with_auth_error",
 			data: map[string]any{
-				"type": "assistant",
+				"type":  "assistant",
+				"error": "authentication_failed",
 				"message": map[string]any{
 					"content": []any{map[string]any{"type": "text", "text": "Auth failed"}},
 					"model":   "claude-3-sonnet",
-					"error":   "authentication_failed",
 				},
 			},
 			expectedType: shared.MessageTypeAssistant,
@@ -175,6 +205,130 @@ func TestParseValidMessages(t *testing.T) {
 				}
 				if am.IsRateLimited() {
 					t.Error("expected IsRateLimited() to return false for auth error")
+				}
+			},
+		},
+		{
+			name: "assistant_message_with_billing_error",
+			data: map[string]any{
+				"type":  "assistant",
+				"error": "billing_error",
+				"message": map[string]any{
+					"content": []any{map[string]any{"type": "text", "text": "Billing error"}},
+					"model":   "claude-3-sonnet",
+				},
+			},
+			expectedType: shared.MessageTypeAssistant,
+			validate: func(t *testing.T, msg shared.Message) {
+				t.Helper()
+				am := msg.(*shared.AssistantMessage)
+				if am.Error == nil {
+					t.Fatal("expected Error to be set, got nil")
+				}
+				if *am.Error != shared.AssistantMessageErrorBilling {
+					t.Errorf("expected Error 'billing_error', got %v", *am.Error)
+				}
+				if !am.HasError() {
+					t.Error("expected HasError() to return true")
+				}
+				if am.IsRateLimited() {
+					t.Error("expected IsRateLimited() to return false for billing error")
+				}
+			},
+		},
+		{
+			name: "assistant_message_with_server_error",
+			data: map[string]any{
+				"type":  "assistant",
+				"error": "server_error",
+				"message": map[string]any{
+					"content": []any{map[string]any{"type": "text", "text": "Server error"}},
+					"model":   "claude-3-sonnet",
+				},
+			},
+			expectedType: shared.MessageTypeAssistant,
+			validate: func(t *testing.T, msg shared.Message) {
+				t.Helper()
+				am := msg.(*shared.AssistantMessage)
+				if am.Error == nil {
+					t.Fatal("expected Error to be set, got nil")
+				}
+				if *am.Error != shared.AssistantMessageErrorServer {
+					t.Errorf("expected Error 'server_error', got %v", *am.Error)
+				}
+				if !am.HasError() {
+					t.Error("expected HasError() to return true")
+				}
+			},
+		},
+		{
+			name: "assistant_message_with_invalid_request_error",
+			data: map[string]any{
+				"type":  "assistant",
+				"error": "invalid_request",
+				"message": map[string]any{
+					"content": []any{map[string]any{"type": "text", "text": "Invalid request"}},
+					"model":   "claude-3-sonnet",
+				},
+			},
+			expectedType: shared.MessageTypeAssistant,
+			validate: func(t *testing.T, msg shared.Message) {
+				t.Helper()
+				am := msg.(*shared.AssistantMessage)
+				if am.Error == nil {
+					t.Fatal("expected Error to be set, got nil")
+				}
+				if *am.Error != shared.AssistantMessageErrorInvalidRequest {
+					t.Errorf("expected Error 'invalid_request', got %v", *am.Error)
+				}
+				if !am.HasError() {
+					t.Error("expected HasError() to return true")
+				}
+			},
+		},
+		{
+			name: "assistant_message_with_unknown_error",
+			data: map[string]any{
+				"type":  "assistant",
+				"error": "unknown",
+				"message": map[string]any{
+					"content": []any{map[string]any{"type": "text", "text": "Unknown error"}},
+					"model":   "claude-3-sonnet",
+				},
+			},
+			expectedType: shared.MessageTypeAssistant,
+			validate: func(t *testing.T, msg shared.Message) {
+				t.Helper()
+				am := msg.(*shared.AssistantMessage)
+				if am.Error == nil {
+					t.Fatal("expected Error to be set, got nil")
+				}
+				if *am.Error != shared.AssistantMessageErrorUnknown {
+					t.Errorf("expected Error 'unknown', got %v", *am.Error)
+				}
+				if !am.HasError() {
+					t.Error("expected HasError() to return true")
+				}
+			},
+		},
+		{
+			name: "assistant_message_error_in_nested_message_ignored",
+			// Regression: error inside data["message"] must NOT be picked up.
+			// Only top-level data["error"] is the wire format.
+			data: map[string]any{
+				"type": "assistant",
+				"message": map[string]any{
+					"content": []any{map[string]any{"type": "text", "text": "ok"}},
+					"model":   "claude-3-sonnet",
+					"error":   "rate_limit",
+				},
+			},
+			expectedType: shared.MessageTypeAssistant,
+			validate: func(t *testing.T, msg shared.Message) {
+				t.Helper()
+				am := msg.(*shared.AssistantMessage)
+				if am.Error != nil {
+					t.Errorf("expected Error nil when error is nested in message object, got %v", *am.Error)
 				}
 			},
 		},
@@ -232,8 +386,7 @@ func TestParseValidMessages(t *testing.T) {
 	}
 }
 
-// Issue #98: TestParseUserMessageToolUseResult tests tool_use_result field parsing
-// Python SDK v0.1.22 parity (PR #495)
+// TestParseUserMessageToolUseResult tests tool_use_result field parsing.
 func TestParseUserMessageToolUseResult(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -664,6 +817,101 @@ func TestEmptyAndWhitespaceHandling(t *testing.T) {
 		assertNoParseError(t, err)
 		assertMessageCount(t, messages, 0)
 	}
+}
+
+// TestParseRateLimitEventMessage covers the rate_limit_event heartbeat the
+// CLI emits per session. See issue #126.
+func TestParseRateLimitEventMessage(t *testing.T) {
+	parser := New()
+
+	t.Run("allowed heartbeat", func(t *testing.T) {
+		msg, err := parser.ParseMessage(map[string]any{
+			"type": "rate_limit_event",
+			"rate_limit_info": map[string]any{
+				"status":          "allowed",
+				"resetsAt":        float64(1778598000),
+				"rateLimitType":   "five_hour",
+				"overageStatus":   "allowed",
+				"overageResetsAt": float64(1780272000),
+				"isUsingOverage":  false,
+			},
+			"uuid":       "91eb2b60-b575-4977-a4cb-1733e0939c1b",
+			"session_id": "cca23008-d827-4b92-a8bc-d6f5efe5a03e",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		rl, ok := msg.(*shared.RateLimitEventMessage)
+		if !ok {
+			t.Fatalf("expected *RateLimitEventMessage, got %T", msg)
+		}
+		if rl.Type() != shared.MessageTypeRateLimitEvent {
+			t.Errorf("Type() = %q, want %q", rl.Type(), shared.MessageTypeRateLimitEvent)
+		}
+		if !rl.IsAllowed() {
+			t.Error("IsAllowed() = false, want true")
+		}
+		if rl.RateLimitInfo.RateLimitType != "five_hour" {
+			t.Errorf("RateLimitType = %q, want %q", rl.RateLimitInfo.RateLimitType, "five_hour")
+		}
+		if rl.RateLimitInfo.ResetsAt != 1778598000 {
+			t.Errorf("ResetsAt = %d, want 1778598000", rl.RateLimitInfo.ResetsAt)
+		}
+		if rl.UUID != "91eb2b60-b575-4977-a4cb-1733e0939c1b" {
+			t.Errorf("UUID = %q", rl.UUID)
+		}
+		if rl.SessionID != "cca23008-d827-4b92-a8bc-d6f5efe5a03e" {
+			t.Errorf("SessionID = %q", rl.SessionID)
+		}
+	})
+
+	t.Run("non-allowed status", func(t *testing.T) {
+		msg, err := parser.ParseMessage(map[string]any{
+			"type": "rate_limit_event",
+			"rate_limit_info": map[string]any{
+				"status":        "blocked",
+				"resetsAt":      float64(1778600000),
+				"rateLimitType": "five_hour",
+			},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		rl := msg.(*shared.RateLimitEventMessage)
+		if rl.IsAllowed() {
+			t.Error("IsAllowed() = true for status=blocked")
+		}
+		if rl.RateLimitInfo.Status != "blocked" {
+			t.Errorf("Status = %q, want %q", rl.RateLimitInfo.Status, "blocked")
+		}
+	})
+
+	t.Run("missing rate_limit_info is parse error", func(t *testing.T) {
+		_, err := parser.ParseMessage(map[string]any{
+			"type": "rate_limit_event",
+		})
+		if err == nil {
+			t.Fatal("expected error for missing rate_limit_info, got nil")
+		}
+	})
+
+	t.Run("missing optional uuid and session_id is ok", func(t *testing.T) {
+		msg, err := parser.ParseMessage(map[string]any{
+			"type": "rate_limit_event",
+			"rate_limit_info": map[string]any{
+				"status":        "allowed",
+				"resetsAt":      float64(1),
+				"rateLimitType": "five_hour",
+			},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		rl := msg.(*shared.RateLimitEventMessage)
+		if rl.UUID != "" || rl.SessionID != "" {
+			t.Errorf("expected empty optional fields, got uuid=%q session_id=%q", rl.UUID, rl.SessionID)
+		}
+	})
 }
 
 // TestParseMessages tests the convenience function
@@ -1768,7 +2016,7 @@ func TestStreamEventErrorConditions(t *testing.T) {
 	}
 }
 
-// TestResultMessageErrorsField tests the errors array field on ResultMessage (Issue #110)
+// TestResultMessageErrorsField tests the errors array field on ResultMessage.
 func TestResultMessageErrorsField(t *testing.T) {
 	parser := setupParserTest(t)
 

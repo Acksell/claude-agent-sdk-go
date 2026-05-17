@@ -148,6 +148,14 @@ func BuildCommandWithPrompt(cliPath string, options *shared.Options, prompt stri
 
 // addOptionsToCommand adds all Options fields as CLI flags
 func addOptionsToCommand(cmd []string, options *shared.Options) []string {
+	// Apply Skills option by transforming AllowedTools and SettingSources before
+	// any flags are emitted. Matches the Python SDK's _apply_skills_defaults.
+	if options.Skills != nil {
+		copied := *options
+		copied.AllowedTools, copied.SettingSources = applySkillsDefaults(options)
+		options = &copied
+	}
+
 	cmd = addToolControlFlags(cmd, options)
 	cmd = addToolsFlag(cmd, options)
 	cmd = addModelAndPromptFlags(cmd, options)
@@ -466,6 +474,50 @@ func CheckCLIVersion(ctx context.Context, cliPath string) (warning string) {
 	}
 
 	return ""
+}
+
+// applySkillsDefaults computes the effective AllowedTools and SettingSources for
+// the Skills option without mutating the input. When Skills is "all", appends the
+// bare "Skill" tool; when it is a []string, appends "Skill(name)" for each entry.
+// When Skills is non-nil and SettingSources is unset, defaults SettingSources to
+// [user, project] so the CLI discovers installed Skills. Mirrors the Python SDK's
+// _apply_skills_defaults in subprocess_cli.py.
+func applySkillsDefaults(options *shared.Options) ([]string, []shared.SettingSource) {
+	allowedTools := append([]string(nil), options.AllowedTools...)
+	settingSources := options.SettingSources
+
+	switch s := options.Skills.(type) {
+	case nil:
+		return allowedTools, settingSources
+	case string:
+		if s == shared.SkillsAll && !containsString(allowedTools, "Skill") {
+			allowedTools = append(allowedTools, "Skill")
+		}
+	case []string:
+		for _, name := range s {
+			pattern := fmt.Sprintf("Skill(%s)", name)
+			if !containsString(allowedTools, pattern) {
+				allowedTools = append(allowedTools, pattern)
+			}
+		}
+	}
+
+	if settingSources == nil {
+		settingSources = []shared.SettingSource{
+			shared.SettingSourceUser,
+			shared.SettingSourceProject,
+		}
+	}
+	return allowedTools, settingSources
+}
+
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }
 
 // compareVersionParts compares two X.Y.Z versions.

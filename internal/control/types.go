@@ -16,7 +16,7 @@ const (
 	MessageTypeControlResponse = "control_response"
 )
 
-// Request subtype constants matching Python SDK for 100% parity.
+// Request subtype constants.
 const (
 	// SubtypeInterrupt requests interruption of current operation.
 	SubtypeInterrupt = "interrupt"
@@ -108,7 +108,6 @@ type SetPermissionModeRequest struct {
 }
 
 // SetModelRequest changes the AI model at runtime.
-// This matches Python SDK's set_model() behavior exactly.
 type SetModelRequest struct {
 	// Subtype is always SubtypeSetModel.
 	Subtype string `json:"subtype"`
@@ -118,7 +117,6 @@ type SetModelRequest struct {
 }
 
 // RewindFilesRequest requests rewinding files to a specific user message state.
-// Matches Python SDK's SDKControlRewindFilesRequest structure.
 type RewindFilesRequest struct {
 	// Subtype is always SubtypeRewindFiles ("rewind_files").
 	Subtype string `json:"subtype"`
@@ -127,12 +125,7 @@ type RewindFilesRequest struct {
 	UserMessageID string `json:"user_message_id"`
 }
 
-// =============================================================================
-// Permission Callback Types (Issue #8)
-// =============================================================================
-
 // PermissionUpdateType specifies the type of permission update.
-// Matches Python SDK's Literal type exactly for 100% parity.
 type PermissionUpdateType string
 
 const (
@@ -160,7 +153,6 @@ type PermissionRuleValue struct {
 }
 
 // PermissionUpdate represents a dynamic permission rule update.
-// Matches Python SDK's PermissionUpdate dataclass.
 type PermissionUpdate struct {
 	// Type is the kind of permission update.
 	Type PermissionUpdateType `json:"type"`
@@ -177,7 +169,6 @@ type PermissionUpdate struct {
 }
 
 // ToolPermissionContext provides context for permission callbacks.
-// Matches Python SDK's ToolPermissionContext dataclass.
 type ToolPermissionContext struct {
 	// Signal is reserved for future abort signal support (currently unused).
 	Signal any `json:"-"`
@@ -250,14 +241,102 @@ type CanUseToolCallback func(
 	permCtx ToolPermissionContext,
 ) (PermissionResult, error)
 
-// =============================================================================
-// MCP Server Types (Issue #7)
-// =============================================================================
+// SubtypeGetMcpStatus is the control request subtype for querying MCP server status.
+// Wire value: {"subtype": "mcp_status"}.
+const SubtypeGetMcpStatus = "mcp_status"
+
+// GetMcpStatusRequest requests the status of all configured MCP servers.
+type GetMcpStatusRequest struct {
+	Subtype string `json:"subtype"`
+}
+
+// NewGetMcpStatusRequest creates a properly initialized GetMcpStatusRequest.
+func NewGetMcpStatusRequest() GetMcpStatusRequest {
+	return GetMcpStatusRequest{Subtype: SubtypeGetMcpStatus}
+}
+
+// McpServerConnectionStatus represents the connection state of an MCP server.
+type McpServerConnectionStatus string
+
+const (
+	// McpServerConnectionStatusConnected indicates the server is connected and ready.
+	McpServerConnectionStatusConnected McpServerConnectionStatus = "connected"
+	// McpServerConnectionStatusFailed indicates the server failed to connect.
+	McpServerConnectionStatusFailed McpServerConnectionStatus = "failed"
+	// McpServerConnectionStatusNeedsAuth indicates the server requires authentication.
+	McpServerConnectionStatusNeedsAuth McpServerConnectionStatus = "needs-auth"
+	// McpServerConnectionStatusPending indicates the server connection is in progress.
+	McpServerConnectionStatusPending McpServerConnectionStatus = "pending"
+	// McpServerConnectionStatusDisabled indicates the server is disabled.
+	McpServerConnectionStatusDisabled McpServerConnectionStatus = "disabled"
+)
+
+// McpServerInfo contains version information about a connected MCP server.
+type McpServerInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+// McpToolAnnotations describes behavioral hints for an MCP tool.
+// All fields are optional (pointer) to distinguish "not set" from false.
+type McpToolAnnotations struct {
+	ReadOnly    *bool `json:"readOnly,omitempty"`
+	Destructive *bool `json:"destructive,omitempty"`
+	OpenWorld   *bool `json:"openWorld,omitempty"`
+}
+
+// McpToolInfo describes a tool exposed by an MCP server.
+type McpToolInfo struct {
+	Name        string              `json:"name"`
+	Description *string             `json:"description,omitempty"`
+	Annotations *McpToolAnnotations `json:"annotations,omitempty"`
+}
+
+// McpServerStatusConfig is a flat struct covering all server config variants
+// (stdio/sse/http/sdk/claudeai-proxy), discriminated by Type.
+type McpServerStatusConfig struct {
+	Type    string            `json:"type"`
+	Command *string           `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	URL     *string           `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	Name    *string           `json:"name,omitempty"`
+	ID      *string           `json:"id,omitempty"`
+}
+
+// MCP server config type constants for McpServerStatusConfig.Type.
+const (
+	McpServerConfigTypeStdio    = "stdio"
+	McpServerConfigTypeSSE      = "sse"
+	McpServerConfigTypeHTTP     = "http"
+	McpServerConfigTypeSDK      = "sdk"
+	McpServerConfigTypeClaudeAI = "claudeai-proxy"
+)
+
+// McpServerStatus contains the full status of a single MCP server.
+type McpServerStatus struct {
+	Name   string                    `json:"name"`
+	Status McpServerConnectionStatus `json:"status"`
+	// ServerInfo contains version info. Only non-nil when Status is McpServerConnectionStatusConnected.
+	ServerInfo *McpServerInfo `json:"serverInfo,omitempty"`
+	// Error contains the error message. Only non-nil when Status is McpServerConnectionStatusFailed.
+	Error  *string                `json:"error,omitempty"`
+	Config *McpServerStatusConfig `json:"config,omitempty"`
+	Scope  *string                `json:"scope,omitempty"`
+	// Tools lists tools exposed by this server. Only populated when Status is McpServerConnectionStatusConnected.
+	Tools []McpToolInfo `json:"tools,omitempty"`
+}
+
+// McpStatusResponse is the response payload for a GetMcpStatus request.
+type McpStatusResponse struct {
+	McpServers []McpServerStatus `json:"mcpServers"`
+}
 
 // Type aliases for MCP types from shared package.
 // Using type aliases (not type definitions) ensures interface compatibility:
-// - shared.McpServer and control.McpServer are the SAME type
-// - This allows transport to pass shared.McpServer to control.WithSdkMcpServers()
+// shared.McpServer and control.McpServer are the same type, so transport can
+// pass shared.McpServer to control.WithSdkMcpServers().
 type (
 	// McpServer is the interface for in-process SDK MCP servers.
 	McpServer = shared.McpServer

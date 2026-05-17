@@ -57,10 +57,6 @@ type SdkPluginConfig = shared.SdkPluginConfig
 // OutputFormat specifies the format for structured output.
 type OutputFormat = shared.OutputFormat
 
-// =============================================================================
-// Permission Callback Types (Issue #8)
-// =============================================================================
-
 // CanUseToolCallback is invoked when CLI requests permission to use a tool.
 // The callback receives tool name, input parameters, and permission context.
 // Return PermissionResultAllow to permit, PermissionResultDeny to deny.
@@ -313,6 +309,47 @@ func WithSettingSources(sources ...SettingSource) Option {
 	}
 }
 
+// SkillsAll is the sentinel value for enabling every discovered Skill.
+// Passing this to WithSkills enables all Skills found on the filesystem.
+const SkillsAll = shared.SkillsAll
+
+// WithSkills sets the Skills configuration directly.
+// Accepts the string "all" (use SkillsAll) to enable every discovered Skill,
+// a []string of Skill names to enable only those, or []string{} to disable all.
+// When set, SettingSources defaults to [user, project] if unset so the CLI
+// discovers installed Skills. Mirrors the Python SDK's skills option.
+func WithSkills(skills any) Option {
+	return func(o *Options) {
+		o.Skills = skills
+	}
+}
+
+// WithSkillsAll enables every discovered Skill in the session.
+func WithSkillsAll() Option {
+	return func(o *Options) {
+		o.Skills = SkillsAll
+	}
+}
+
+// WithSkillsList enables only the named Skills.
+// Names match the name field in SKILL.md or the Skill's directory name.
+// Use "plugin:skill" for plugin-provided Skills.
+func WithSkillsList(names ...string) Option {
+	return func(o *Options) {
+		// Always store a non-nil slice so callers can distinguish from unset.
+		list := make([]string, len(names))
+		copy(list, names)
+		o.Skills = list
+	}
+}
+
+// WithSkillsDisabled disables all Skills in the session.
+func WithSkillsDisabled() Option {
+	return func(o *Options) {
+		o.Skills = []string{}
+	}
+}
+
 // WithExtraArgs sets arbitrary CLI flags via ExtraArgs.
 func WithExtraArgs(args map[string]*string) Option {
 	return func(o *Options) {
@@ -513,7 +550,6 @@ func WithDebugDisabled() Option {
 // Lines are stripped of trailing whitespace before being passed to the callback.
 // This takes precedence over WithDebugWriter if both are set.
 // Callback panics are silently recovered to prevent crashing the SDK.
-// Matches Python SDK's stderr callback behavior.
 func WithStderrCallback(callback func(string)) Option {
 	return func(o *Options) {
 		o.StderrCallback = callback
@@ -562,14 +598,9 @@ func WithPartialStreaming() Option {
 	return WithIncludePartialMessages(true)
 }
 
-// =============================================================================
-// File Checkpointing Options (Issue #32)
-// =============================================================================
-
 // WithEnableFileCheckpointing enables or disables file checkpointing.
 // When enabled, file changes are tracked during the session and can be
 // rewound to their state at any user message using Client.RewindFiles().
-// Matches Python SDK's enable_file_checkpointing option.
 func WithEnableFileCheckpointing(enable bool) Option {
 	return func(o *Options) {
 		o.EnableFileCheckpointing = enable
@@ -582,10 +613,6 @@ func WithEnableFileCheckpointing(enable bool) Option {
 func WithFileCheckpointing() Option {
 	return WithEnableFileCheckpointing(true)
 }
-
-// =============================================================================
-// Permission Callback Constructors and Options (Issue #8)
-// =============================================================================
 
 // NewPermissionResultAllow creates an Allow result with proper defaults.
 // Use this to permit tool execution.
@@ -625,7 +652,6 @@ var NewPermissionResultDeny = control.NewPermissionResultDeny
 //
 // The callback must be thread-safe as it may be invoked concurrently.
 // If no callback is set, all tool requests are denied (secure default).
-// Matches Python SDK's can_use_tool callback behavior.
 func WithCanUseTool(callback CanUseToolCallback) Option {
 	return func(o *Options) {
 		// Handle nil callback explicitly
@@ -651,19 +677,17 @@ func WithCanUseTool(callback CanUseToolCallback) Option {
 	}
 }
 
-// =============================================================================
-// Hook Types (Issue #9)
-// =============================================================================
-
 // HookEvent represents lifecycle events that can trigger hooks.
 type HookEvent = control.HookEvent
 
-// Hook event constants matching Python SDK exactly.
+// Hook event constants.
 const (
 	// HookEventPreToolUse is triggered before a tool is executed.
 	HookEventPreToolUse = control.HookEventPreToolUse
 	// HookEventPostToolUse is triggered after a tool is executed.
 	HookEventPostToolUse = control.HookEventPostToolUse
+	// HookEventPostToolUseFailure is triggered after a tool execution fails.
+	HookEventPostToolUseFailure = control.HookEventPostToolUseFailure
 	// HookEventUserPromptSubmit is triggered when a user submits a prompt.
 	HookEventUserPromptSubmit = control.HookEventUserPromptSubmit
 	// HookEventStop is triggered when the session is stopping.
@@ -672,6 +696,12 @@ const (
 	HookEventSubagentStop = control.HookEventSubagentStop
 	// HookEventPreCompact is triggered before context compaction.
 	HookEventPreCompact = control.HookEventPreCompact
+	// HookEventNotification is triggered when the CLI emits a notification.
+	HookEventNotification = control.HookEventNotification
+	// HookEventSubagentStart is triggered when a subagent starts.
+	HookEventSubagentStart = control.HookEventSubagentStart
+	// HookEventPermissionRequest is triggered when a permission is requested.
+	HookEventPermissionRequest = control.HookEventPermissionRequest
 )
 
 // HookCallback is the function signature for hook callbacks.
@@ -697,6 +727,8 @@ type (
 	PreToolUseHookInput = control.PreToolUseHookInput
 	// PostToolUseHookInput is the input for PostToolUse hook events.
 	PostToolUseHookInput = control.PostToolUseHookInput
+	// PostToolUseFailureHookInput is the input for PostToolUseFailure hook events.
+	PostToolUseFailureHookInput = control.PostToolUseFailureHookInput
 	// UserPromptSubmitHookInput is the input for UserPromptSubmit hook events.
 	UserPromptSubmitHookInput = control.UserPromptSubmitHookInput
 	// StopHookInput is the input for Stop hook events.
@@ -705,6 +737,12 @@ type (
 	SubagentStopHookInput = control.SubagentStopHookInput
 	// PreCompactHookInput is the input for PreCompact hook events.
 	PreCompactHookInput = control.PreCompactHookInput
+	// NotificationHookInput is the input for Notification hook events.
+	NotificationHookInput = control.NotificationHookInput
+	// SubagentStartHookInput is the input for SubagentStart hook events.
+	SubagentStartHookInput = control.SubagentStartHookInput
+	// PermissionRequestHookInput is the input for PermissionRequest hook events.
+	PermissionRequestHookInput = control.PermissionRequestHookInput
 )
 
 // PreToolUseHookSpecificOutput and related types contain hook-specific output fields.
@@ -713,13 +751,17 @@ type (
 	PreToolUseHookSpecificOutput = control.PreToolUseHookSpecificOutput
 	// PostToolUseHookSpecificOutput contains PostToolUse-specific output fields.
 	PostToolUseHookSpecificOutput = control.PostToolUseHookSpecificOutput
+	// PostToolUseFailureHookSpecificOutput contains PostToolUseFailure-specific output fields.
+	PostToolUseFailureHookSpecificOutput = control.PostToolUseFailureHookSpecificOutput
 	// UserPromptSubmitHookSpecificOutput contains UserPromptSubmit-specific output fields.
 	UserPromptSubmitHookSpecificOutput = control.UserPromptSubmitHookSpecificOutput
+	// NotificationHookSpecificOutput contains Notification-specific output fields.
+	NotificationHookSpecificOutput = control.NotificationHookSpecificOutput
+	// SubagentStartHookSpecificOutput contains SubagentStart-specific output fields.
+	SubagentStartHookSpecificOutput = control.SubagentStartHookSpecificOutput
+	// PermissionRequestHookSpecificOutput contains PermissionRequest-specific output fields.
+	PermissionRequestHookSpecificOutput = control.PermissionRequestHookSpecificOutput
 )
-
-// =============================================================================
-// Hook Options (Issue #9)
-// =============================================================================
 
 // WithHooks sets the complete hook configuration for lifecycle events.
 // This replaces any previously configured hooks.

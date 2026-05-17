@@ -12,10 +12,6 @@ const (
 	testStderrOutput = "permission denied"
 )
 
-// =============================================================================
-// Test Functions (primary purpose - FIRST per project conventions)
-// =============================================================================
-
 // TestIsErrorHelpers tests all Is* helper functions with table-driven tests.
 func TestIsErrorHelpers(t *testing.T) {
 	// Create test errors

@@ -43,6 +43,14 @@ type ToolResultBlock = shared.ToolResultBlock
 // StreamMessage represents a message in the streaming protocol.
 type StreamMessage = shared.StreamMessage
 
+// RateLimitEventMessage is a session heartbeat carrying rate-limit window
+// state. Emitted on essentially every CLI session even when nothing is
+// constrained — see IsAllowed for the quick "all good" check.
+type RateLimitEventMessage = shared.RateLimitEventMessage
+
+// RateLimitInfo is the window state carried by RateLimitEventMessage.
+type RateLimitInfo = shared.RateLimitInfo
+
 // MessageIterator provides iteration over messages.
 type MessageIterator = shared.MessageIterator
 
@@ -68,6 +76,14 @@ const (
 
 	// Partial message streaming type
 	MessageTypeStreamEvent = shared.MessageTypeStreamEvent
+
+	// Session heartbeat carrying rate-limit window state.
+	MessageTypeRateLimitEvent = shared.MessageTypeRateLimitEvent
+)
+
+// Rate-limit window status constants.
+const (
+	RateLimitStatusAllowed = shared.RateLimitStatusAllowed
 )
 
 // Re-export content block type constants
@@ -122,10 +138,12 @@ type Transport interface {
 	// SetModel changes the AI model during streaming session.
 	SetModel(ctx context.Context, model *string) error
 	// SetPermissionMode changes the permission mode during streaming session.
-	SetPermissionMode(ctx context.Context, mode string) error
+	SetPermissionMode(ctx context.Context, mode PermissionMode) error
 	// RewindFiles reverts tracked files to their state at a specific user message.
 	// Requires file checkpointing to be enabled and control protocol initialized.
 	RewindFiles(ctx context.Context, userMessageID string) error
+	// GetMcpStatus returns the connection status of all configured MCP servers.
+	GetMcpStatus(ctx context.Context) (*McpStatusResponse, error)
 	Close() error
 	GetValidator() *StreamValidator
 }
@@ -162,6 +180,48 @@ type SetPermissionModeRequest = control.SetPermissionModeRequest
 // SetModelRequest to change AI model via control protocol.
 type SetModelRequest = control.SetModelRequest
 
+// GetMcpStatusRequest to query MCP server status via control protocol.
+type GetMcpStatusRequest = control.GetMcpStatusRequest
+
+// McpServerConnectionStatus represents the connection state of an MCP server.
+type McpServerConnectionStatus = control.McpServerConnectionStatus
+
+// Re-export MCP server connection status constants
+const (
+	McpServerConnectionStatusConnected = control.McpServerConnectionStatusConnected
+	McpServerConnectionStatusFailed    = control.McpServerConnectionStatusFailed
+	McpServerConnectionStatusNeedsAuth = control.McpServerConnectionStatusNeedsAuth
+	McpServerConnectionStatusPending   = control.McpServerConnectionStatusPending
+	McpServerConnectionStatusDisabled  = control.McpServerConnectionStatusDisabled
+)
+
+// Re-export MCP server config type constants for McpServerStatusConfig.Type.
+const (
+	McpServerConfigTypeStdio    = control.McpServerConfigTypeStdio
+	McpServerConfigTypeSSE      = control.McpServerConfigTypeSSE
+	McpServerConfigTypeHTTP     = control.McpServerConfigTypeHTTP
+	McpServerConfigTypeSDK      = control.McpServerConfigTypeSDK
+	McpServerConfigTypeClaudeAI = control.McpServerConfigTypeClaudeAI
+)
+
+// McpServerInfo contains version information about a connected MCP server.
+type McpServerInfo = control.McpServerInfo
+
+// McpToolAnnotations describes behavioral hints for an MCP tool.
+type McpToolAnnotations = control.McpToolAnnotations
+
+// McpToolInfo describes a tool exposed by an MCP server.
+type McpToolInfo = control.McpToolInfo
+
+// McpServerStatusConfig covers all MCP server config variants, discriminated by Type.
+type McpServerStatusConfig = control.McpServerStatusConfig
+
+// McpServerStatus contains the full status of a single MCP server.
+type McpServerStatus = control.McpServerStatus
+
+// McpStatusResponse is the response payload for a GetMcpStatus request.
+type McpStatusResponse = control.McpStatusResponse
+
 // ControlProtocol manages bidirectional control communication with CLI.
 type ControlProtocol = control.Protocol
 
@@ -175,6 +235,8 @@ const (
 	SubtypeSetModel          = control.SubtypeSetModel
 	SubtypeHookCallback      = control.SubtypeHookCallback
 	SubtypeMcpMessage        = control.SubtypeMcpMessage
+	SubtypeGetMcpStatus      = control.SubtypeGetMcpStatus
+	SubtypeRewindFiles       = control.SubtypeRewindFiles
 
 	// Control response subtypes
 	ResponseSubtypeSuccess = control.ResponseSubtypeSuccess

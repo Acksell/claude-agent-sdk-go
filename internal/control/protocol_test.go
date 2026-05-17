@@ -11,12 +11,7 @@ import (
 	"time"
 )
 
-// Test constants for model names used across dynamic control tests.
 const testModelSonnet = "claude-sonnet-4-5"
-
-// =============================================================================
-// Phase 1: Control Message Type Tests
-// =============================================================================
 
 func TestControlMessageTypes(t *testing.T) {
 	t.Run("message_type_constants", testMessageTypeConstants)
@@ -48,7 +43,6 @@ func testMessageTypeConstants(t *testing.T) {
 func testSubtypeConstants(t *testing.T) {
 	t.Helper()
 
-	// These constants must match the Python SDK exactly for parity
 	tests := []struct {
 		name     string
 		constant string
@@ -62,6 +56,7 @@ func testSubtypeConstants(t *testing.T) {
 		{"hook_callback", SubtypeHookCallback, "hook_callback"},
 		{"mcp_message", SubtypeMcpMessage, "mcp_message"},
 		{"rewind_files", SubtypeRewindFiles, "rewind_files"},
+		{"get_mcp_status", SubtypeGetMcpStatus, "mcp_status"},
 	}
 
 	for _, tc := range tests {
@@ -327,10 +322,6 @@ func testInitializeResponseStructure(t *testing.T) {
 	assertControlEqual(t, "interrupt", resp.SupportedCommands[0])
 }
 
-// =============================================================================
-// Phase 2: Request/Response Correlation Tests
-// =============================================================================
-
 func TestRequestIDGeneration(t *testing.T) {
 	t.Run("format_matches_python_sdk", testRequestIDFormat)
 	t.Run("unique_ids", testRequestIDUniqueness)
@@ -562,15 +553,12 @@ func testThreadSafeConcurrentRequests(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// Phase 3: Initialize Handshake Tests
-// =============================================================================
-
 func TestInitializeHandshake(t *testing.T) {
 	t.Run("success", testInitializeSuccess)
 	t.Run("timeout", testInitializeTimeout)
 	t.Run("error_response", testInitializeErrorResponse)
 	t.Run("cached_result", testInitializeCachedResult)
+	t.Run("concurrent_calls", testInitializeConcurrent)
 }
 
 func testInitializeSuccess(t *testing.T) {
@@ -717,14 +705,73 @@ func testInitializeCachedResult(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// Phase 4: Message Routing Tests
-// =============================================================================
+// testInitializeConcurrent verifies that concurrent Initialize calls do not race
+// and all callers receive the same cached response (M4).
+func testInitializeConcurrent(t *testing.T) {
+	t.Helper()
+
+	ctx, cancel := setupControlTestContext(t, 5*time.Second)
+	defer cancel()
+
+	transport := newControlMockTransport()
+	protocol := NewProtocol(transport)
+
+	err := protocol.Start(ctx)
+	assertControlNoError(t, err)
+	defer func() { _ = protocol.Close() }()
+
+	// Respond once after a short delay - only the first request should be sent.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		transport.mu.Lock()
+		if len(transport.writtenData) > 0 {
+			var req SDKControlRequest
+			if err := json.Unmarshal(transport.writtenData[0], &req); err == nil {
+				transport.mu.Unlock()
+				transport.injectResponse(req.RequestID, map[string]any{
+					"supported_commands": []string{"interrupt"},
+				})
+				return
+			}
+		}
+		transport.mu.Unlock()
+	}()
+
+	const goroutines = 10
+	results := make([]*InitializeResponse, goroutines)
+	errs := make([]error, goroutines)
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			results[i], errs[i] = protocol.Initialize(ctx)
+		}()
+	}
+	wg.Wait()
+
+	for i, e := range errs {
+		if e != nil {
+			t.Errorf("goroutine %d got error: %v", i, e)
+		}
+	}
+	for i, r := range results {
+		if r == nil {
+			t.Errorf("goroutine %d got nil response", i)
+			continue
+		}
+		if r != results[0] {
+			t.Errorf("goroutine %d got different response instance (expected cached pointer)", i)
+		}
+	}
+}
 
 func TestMessageRouting(t *testing.T) {
 	t.Run("route_control_response", testRouteControlResponse)
 	t.Run("route_regular_message", testRouteRegularMessage)
 	t.Run("route_unknown_type", testRouteUnknownType)
+	t.Run("forward_to_stream_full_buffer", testForwardToStreamFullBuffer)
 }
 
 func testRouteControlResponse(t *testing.T) {
@@ -839,9 +886,45 @@ func testRouteUnknownType(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// Phase 6: Interrupt via Protocol Tests
-// =============================================================================
+// testForwardToStreamFullBuffer verifies that forwardToStream returns an error
+// instead of blocking readLoop when the message stream buffer is full (M3).
+func testForwardToStreamFullBuffer(t *testing.T) {
+	t.Helper()
+
+	ctx, cancel := setupControlTestContext(t, 5*time.Second)
+	defer cancel()
+
+	transport := newControlMockTransport()
+	protocol := NewProtocol(transport)
+
+	err := protocol.Start(ctx)
+	assertControlNoError(t, err)
+	defer func() { _ = protocol.Close() }()
+
+	// Fill the message stream buffer completely (capacity is 100).
+	for i := 0; i < 100; i++ {
+		msg := map[string]any{"type": "assistant", "index": i}
+		if err := protocol.HandleIncomingMessage(ctx, msg); err != nil {
+			t.Fatalf("unexpected error filling buffer at index %d: %v", i, err)
+		}
+	}
+
+	// One more message should fail fast instead of blocking.
+	overflow := map[string]any{"type": "assistant", "overflow": true}
+	done := make(chan error, 1)
+	go func() {
+		done <- protocol.HandleIncomingMessage(ctx, overflow)
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("expected error when stream buffer is full, got nil")
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Error("HandleIncomingMessage blocked instead of returning an error when buffer is full")
+	}
+}
 
 func TestInterruptViaProtocol(t *testing.T) {
 	t.Run("sends_interrupt_request", testInterruptSendsRequest)
@@ -897,10 +980,6 @@ func testInterruptSendsRequest(t *testing.T) {
 	}
 	assertControlEqual(t, SubtypeInterrupt, request["subtype"])
 }
-
-// =============================================================================
-// Mock Transport for Control Protocol Tests
-// =============================================================================
 
 type controlMockTransport struct {
 	mu          sync.Mutex
@@ -981,9 +1060,24 @@ func (m *controlMockTransport) getWriteCount() int {
 	return len(m.writtenData)
 }
 
-// =============================================================================
-// Test Helpers
-// =============================================================================
+// waitForFirstWrite polls until the first write is available or the deadline passes.
+// Returns the parsed request and true on success, or the zero value and false on timeout.
+// Use this instead of time.Sleep + early-return to avoid flaky tests under load.
+func (m *controlMockTransport) waitForFirstWrite(deadline time.Time) (SDKControlRequest, bool) {
+	for time.Now().Before(deadline) {
+		m.mu.Lock()
+		if len(m.writtenData) > 0 {
+			var req SDKControlRequest
+			if err := json.Unmarshal(m.writtenData[0], &req); err == nil {
+				m.mu.Unlock()
+				return req, true
+			}
+		}
+		m.mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+	}
+	return SDKControlRequest{}, false
+}
 
 func setupControlTestContext(t *testing.T, timeout time.Duration) (context.Context, context.CancelFunc) {
 	t.Helper()
@@ -1003,10 +1097,6 @@ func assertControlEqual(t *testing.T, expected, actual any) {
 		t.Errorf("expected %v, got %v", expected, actual)
 	}
 }
-
-// =============================================================================
-// Phase 7: Dynamic Control Methods Tests (SetModel, SetPermissionMode)
-// =============================================================================
 
 func TestDynamicControlMethods(t *testing.T) {
 	t.Run("set_model", testSetModel)
@@ -1371,10 +1461,6 @@ func testMarshalSetModelWithNil(t *testing.T) {
 		t.Errorf("expected model to be nil, got %v", request["model"])
 	}
 }
-
-// =============================================================================
-// Phase 8: Permission Callback Tests (Issue #8)
-// =============================================================================
 
 func TestPermissionCallback(t *testing.T) {
 	t.Run("allow_callback", testPermissionAllowCallback)
@@ -1921,10 +2007,6 @@ func ptrString(s string) *string {
 	return &s
 }
 
-// =============================================================================
-// RewindFiles Request Serialization Tests (Issue #32)
-// =============================================================================
-
 func TestRewindFilesRequestSerialization(t *testing.T) {
 	t.Run("marshal_rewind_files_request", testMarshalRewindFilesRequest)
 }
@@ -1958,10 +2040,6 @@ func testMarshalRewindFilesRequest(t *testing.T) {
 	assertControlEqual(t, "rewind_files", request["subtype"])
 	assertControlEqual(t, "msg-uuid-12345", request["user_message_id"])
 }
-
-// =============================================================================
-// Phase 9: HandleControlInitErr Tests (Issue #110)
-// =============================================================================
 
 func TestHandleControlInitErr(t *testing.T) {
 	t.Run("unblocks_send_control_request", testInitErrUnblocksSendControlRequest)
@@ -2048,5 +2126,481 @@ func testInitErrOnlyFirstDelivered(t *testing.T) {
 		t.Errorf("expected empty channel, got: %v", err)
 	default:
 		// Good - empty
+	}
+}
+
+func TestProtocolGetMcpStatus(t *testing.T) {
+	t.Run("success_connected_server", testGetMcpStatusConnected)
+	t.Run("success_failed_server", testGetMcpStatusFailed)
+	t.Run("success_multiple_servers", testGetMcpStatusMultiple)
+	t.Run("success_empty_servers", testGetMcpStatusEmpty)
+	t.Run("success_server_info", testGetMcpStatusServerInfo)
+	t.Run("success_tool_annotations", testGetMcpStatusToolAnnotations)
+	t.Run("success_server_config", testGetMcpStatusConfig)
+	t.Run("error_response", testGetMcpStatusError)
+	t.Run("malformed_response", testGetMcpStatusMalformed)
+	t.Run("nil_response", testGetMcpStatusNilResponse)
+	t.Run("timeout", testGetMcpStatusTimeout)
+}
+
+func testGetMcpStatusConnected(t *testing.T) {
+	t.Helper()
+
+	ctx, cancel := setupControlTestContext(t, 5*time.Second)
+	defer cancel()
+
+	transport := newControlMockTransport()
+	protocol := NewProtocol(transport)
+
+	err := protocol.Start(ctx)
+	assertControlNoError(t, err)
+	defer func() { _ = protocol.Close() }()
+
+	serverName := "my-server"
+	scope := "local"
+	toolDesc := "reads a file"
+
+	go func() {
+		req, ok := transport.waitForFirstWrite(time.Now().Add(4 * time.Second))
+		if !ok {
+			return
+		}
+		if reqData, _ := req.Request.(map[string]any); reqData != nil {
+			assertControlEqual(t, SubtypeGetMcpStatus, reqData["subtype"])
+		}
+		transport.injectResponse(req.RequestID, map[string]any{
+			"mcpServers": []any{
+				map[string]any{
+					"name":   serverName,
+					"status": "connected",
+					"scope":  scope,
+					"tools": []any{
+						map[string]any{
+							"name":        "read_file",
+							"description": toolDesc,
+						},
+					},
+				},
+			},
+		})
+	}()
+
+	resp, err := protocol.GetMcpStatus(ctx)
+	assertControlNoError(t, err)
+
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if len(resp.McpServers) != 1 {
+		t.Fatalf("expected 1 server, got %d", len(resp.McpServers))
+	}
+
+	srv := resp.McpServers[0]
+	assertControlEqual(t, serverName, srv.Name)
+	assertControlEqual(t, McpServerConnectionStatusConnected, srv.Status)
+	if srv.Scope == nil || *srv.Scope != scope {
+		t.Errorf("expected scope %q, got %v", scope, srv.Scope)
+	}
+	if len(srv.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(srv.Tools))
+	}
+	assertControlEqual(t, "read_file", srv.Tools[0].Name)
+	if srv.Tools[0].Description == nil || *srv.Tools[0].Description != toolDesc {
+		t.Errorf("expected description %q, got %v", toolDesc, srv.Tools[0].Description)
+	}
+}
+
+func testGetMcpStatusFailed(t *testing.T) {
+	t.Helper()
+
+	ctx, cancel := setupControlTestContext(t, 5*time.Second)
+	defer cancel()
+
+	transport := newControlMockTransport()
+	protocol := NewProtocol(transport)
+
+	err := protocol.Start(ctx)
+	assertControlNoError(t, err)
+	defer func() { _ = protocol.Close() }()
+
+	errMsg := "connection refused"
+
+	go func() {
+		req, ok := transport.waitForFirstWrite(time.Now().Add(4 * time.Second))
+		if !ok {
+			return
+		}
+		transport.injectResponse(req.RequestID, map[string]any{
+			"mcpServers": []any{
+				map[string]any{
+					"name":   "broken-server",
+					"status": "failed",
+					"error":  errMsg,
+				},
+			},
+		})
+	}()
+
+	resp, err := protocol.GetMcpStatus(ctx)
+	assertControlNoError(t, err)
+
+	if resp == nil || len(resp.McpServers) != 1 {
+		t.Fatal("expected 1 server in response")
+	}
+	srv := resp.McpServers[0]
+	assertControlEqual(t, McpServerConnectionStatusFailed, srv.Status)
+	if srv.Error == nil || *srv.Error != errMsg {
+		t.Errorf("expected error %q, got %v", errMsg, srv.Error)
+	}
+}
+
+func testGetMcpStatusServerInfo(t *testing.T) {
+	t.Helper()
+
+	ctx, cancel := setupControlTestContext(t, 5*time.Second)
+	defer cancel()
+
+	transport := newControlMockTransport()
+	protocol := NewProtocol(transport)
+
+	err := protocol.Start(ctx)
+	assertControlNoError(t, err)
+	defer func() { _ = protocol.Close() }()
+
+	go func() {
+		req, ok := transport.waitForFirstWrite(time.Now().Add(4 * time.Second))
+		if !ok {
+			return
+		}
+		transport.injectResponse(req.RequestID, map[string]any{
+			"mcpServers": []any{
+				map[string]any{
+					"name":   "my-server",
+					"status": "connected",
+					"serverInfo": map[string]any{
+						"name":    "my-server",
+						"version": "1.0.0",
+					},
+				},
+			},
+		})
+	}()
+
+	resp, err := protocol.GetMcpStatus(ctx)
+	assertControlNoError(t, err)
+	if resp == nil || len(resp.McpServers) != 1 {
+		t.Fatal("expected 1 server in response")
+	}
+	srv := resp.McpServers[0]
+	assertControlEqual(t, McpServerConnectionStatusConnected, srv.Status)
+	if srv.ServerInfo == nil {
+		t.Fatal("expected non-nil ServerInfo for connected server")
+	}
+	assertControlEqual(t, "my-server", srv.ServerInfo.Name)
+	assertControlEqual(t, "1.0.0", srv.ServerInfo.Version)
+}
+
+func testGetMcpStatusToolAnnotations(t *testing.T) {
+	t.Helper()
+
+	ctx, cancel := setupControlTestContext(t, 5*time.Second)
+	defer cancel()
+
+	transport := newControlMockTransport()
+	protocol := NewProtocol(transport)
+
+	err := protocol.Start(ctx)
+	assertControlNoError(t, err)
+	defer func() { _ = protocol.Close() }()
+
+	go func() {
+		req, ok := transport.waitForFirstWrite(time.Now().Add(4 * time.Second))
+		if !ok {
+			return
+		}
+		transport.injectResponse(req.RequestID, map[string]any{
+			"mcpServers": []any{
+				map[string]any{
+					"name":   "annotated-server",
+					"status": "connected",
+					"tools": []any{
+						map[string]any{
+							"name":        "read_file",
+							"description": "reads a file",
+							"annotations": map[string]any{
+								"readOnly":    true,
+								"destructive": false,
+								"openWorld":   true,
+							},
+						},
+					},
+				},
+			},
+		})
+	}()
+
+	resp, err := protocol.GetMcpStatus(ctx)
+	assertControlNoError(t, err)
+	if resp == nil || len(resp.McpServers) != 1 {
+		t.Fatal("expected 1 server in response")
+	}
+	srv := resp.McpServers[0]
+	if len(srv.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(srv.Tools))
+	}
+	tool := srv.Tools[0]
+	if tool.Annotations == nil {
+		t.Fatal("expected non-nil Annotations")
+	}
+	if tool.Annotations.ReadOnly == nil || !*tool.Annotations.ReadOnly {
+		t.Errorf("expected ReadOnly=true, got %v", tool.Annotations.ReadOnly)
+	}
+	if tool.Annotations.Destructive == nil || *tool.Annotations.Destructive {
+		t.Errorf("expected Destructive=false, got %v", tool.Annotations.Destructive)
+	}
+	if tool.Annotations.OpenWorld == nil || !*tool.Annotations.OpenWorld {
+		t.Errorf("expected OpenWorld=true, got %v", tool.Annotations.OpenWorld)
+	}
+}
+
+func testGetMcpStatusConfig(t *testing.T) {
+	t.Helper()
+
+	ctx, cancel := setupControlTestContext(t, 5*time.Second)
+	defer cancel()
+
+	transport := newControlMockTransport()
+	protocol := NewProtocol(transport)
+
+	err := protocol.Start(ctx)
+	assertControlNoError(t, err)
+	defer func() { _ = protocol.Close() }()
+
+	cmd := "npx"
+	go func() {
+		req, ok := transport.waitForFirstWrite(time.Now().Add(4 * time.Second))
+		if !ok {
+			return
+		}
+		transport.injectResponse(req.RequestID, map[string]any{
+			"mcpServers": []any{
+				map[string]any{
+					"name":   "stdio-server",
+					"status": "connected",
+					"config": map[string]any{
+						"type":    McpServerConfigTypeStdio,
+						"command": cmd,
+						"args":    []any{"-y", "some-server"},
+					},
+				},
+			},
+		})
+	}()
+
+	resp, err := protocol.GetMcpStatus(ctx)
+	assertControlNoError(t, err)
+	if resp == nil || len(resp.McpServers) != 1 {
+		t.Fatal("expected 1 server in response")
+	}
+	srv := resp.McpServers[0]
+	if srv.Config == nil {
+		t.Fatal("expected non-nil Config")
+	}
+	assertControlEqual(t, McpServerConfigTypeStdio, srv.Config.Type)
+	if srv.Config.Command == nil || *srv.Config.Command != cmd {
+		t.Errorf("expected Command=%q, got %v", cmd, srv.Config.Command)
+	}
+	if len(srv.Config.Args) != 2 || srv.Config.Args[0] != "-y" || srv.Config.Args[1] != "some-server" {
+		t.Errorf("expected Args=[-y some-server], got %v", srv.Config.Args)
+	}
+}
+
+func testGetMcpStatusMultiple(t *testing.T) {
+	t.Helper()
+
+	ctx, cancel := setupControlTestContext(t, 5*time.Second)
+	defer cancel()
+
+	transport := newControlMockTransport()
+	protocol := NewProtocol(transport)
+
+	err := protocol.Start(ctx)
+	assertControlNoError(t, err)
+	defer func() { _ = protocol.Close() }()
+
+	go func() {
+		req, ok := transport.waitForFirstWrite(time.Now().Add(4 * time.Second))
+		if !ok {
+			return
+		}
+		transport.injectResponse(req.RequestID, map[string]any{
+			"mcpServers": []any{
+				map[string]any{"name": "server-a", "status": "connected"},
+				map[string]any{"name": "server-b", "status": "pending"},
+				map[string]any{"name": "server-c", "status": "disabled"},
+				map[string]any{"name": "server-d", "status": "needs-auth"},
+			},
+		})
+	}()
+
+	resp, err := protocol.GetMcpStatus(ctx)
+	assertControlNoError(t, err)
+
+	if resp == nil || len(resp.McpServers) != 4 {
+		t.Fatalf("expected 4 servers, got %d", len(resp.McpServers))
+	}
+	assertControlEqual(t, McpServerConnectionStatusConnected, resp.McpServers[0].Status)
+	assertControlEqual(t, McpServerConnectionStatusPending, resp.McpServers[1].Status)
+	assertControlEqual(t, McpServerConnectionStatusDisabled, resp.McpServers[2].Status)
+	assertControlEqual(t, McpServerConnectionStatusNeedsAuth, resp.McpServers[3].Status)
+}
+
+func testGetMcpStatusError(t *testing.T) {
+	t.Helper()
+
+	ctx, cancel := setupControlTestContext(t, 5*time.Second)
+	defer cancel()
+
+	transport := newControlMockTransport()
+	protocol := NewProtocol(transport)
+
+	err := protocol.Start(ctx)
+	assertControlNoError(t, err)
+	defer func() { _ = protocol.Close() }()
+
+	go func() {
+		req, ok := transport.waitForFirstWrite(time.Now().Add(4 * time.Second))
+		if !ok {
+			return
+		}
+		transport.injectErrorResponse(req.RequestID, "mcp status unavailable")
+	}()
+
+	_, err = protocol.GetMcpStatus(ctx)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "mcp status unavailable") {
+		t.Errorf("expected error message to contain 'mcp status unavailable', got: %v", err)
+	}
+}
+
+func testGetMcpStatusTimeout(t *testing.T) {
+	t.Helper()
+
+	ctx, cancel := setupControlTestContext(t, 5*time.Second)
+	defer cancel()
+
+	transport := newControlMockTransport()
+	protocol := NewProtocol(transport)
+
+	err := protocol.Start(ctx)
+	assertControlNoError(t, err)
+	defer func() { _ = protocol.Close() }()
+
+	// Cancel the context to simulate timeout - no response is injected.
+	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer timeoutCancel()
+
+	_, err = protocol.GetMcpStatus(timeoutCtx)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+}
+
+func testGetMcpStatusEmpty(t *testing.T) {
+	t.Helper()
+
+	ctx, cancel := setupControlTestContext(t, 5*time.Second)
+	defer cancel()
+
+	transport := newControlMockTransport()
+	protocol := NewProtocol(transport)
+
+	err := protocol.Start(ctx)
+	assertControlNoError(t, err)
+	defer func() { _ = protocol.Close() }()
+
+	go func() {
+		req, ok := transport.waitForFirstWrite(time.Now().Add(4 * time.Second))
+		if !ok {
+			return
+		}
+		transport.injectResponse(req.RequestID, map[string]any{
+			"mcpServers": []any{},
+		})
+	}()
+
+	resp, err := protocol.GetMcpStatus(ctx)
+	assertControlNoError(t, err)
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if len(resp.McpServers) != 0 {
+		t.Errorf("expected 0 servers, got %d", len(resp.McpServers))
+	}
+}
+
+func testGetMcpStatusMalformed(t *testing.T) {
+	t.Helper()
+
+	ctx, cancel := setupControlTestContext(t, 5*time.Second)
+	defer cancel()
+
+	transport := newControlMockTransport()
+	protocol := NewProtocol(transport)
+
+	err := protocol.Start(ctx)
+	assertControlNoError(t, err)
+	defer func() { _ = protocol.Close() }()
+
+	go func() {
+		req, ok := transport.waitForFirstWrite(time.Now().Add(4 * time.Second))
+		if !ok {
+			return
+		}
+		// Inject mcpServers as a string instead of an array - should fail unmarshal.
+		transport.injectResponse(req.RequestID, map[string]any{
+			"mcpServers": "not-an-array",
+		})
+	}()
+
+	_, err = protocol.GetMcpStatus(ctx)
+	if err == nil {
+		t.Fatal("expected error for malformed response, got nil")
+	}
+	if !strings.Contains(err.Error(), "unmarshal mcp status response") {
+		t.Errorf("expected error to contain 'unmarshal mcp status response', got: %v", err)
+	}
+}
+
+func testGetMcpStatusNilResponse(t *testing.T) {
+	t.Helper()
+
+	ctx, cancel := setupControlTestContext(t, 5*time.Second)
+	defer cancel()
+
+	transport := newControlMockTransport()
+	protocol := NewProtocol(transport)
+
+	err := protocol.Start(ctx)
+	assertControlNoError(t, err)
+	defer func() { _ = protocol.Close() }()
+
+	go func() {
+		req, ok := transport.waitForFirstWrite(time.Now().Add(4 * time.Second))
+		if !ok {
+			return
+		}
+		// Inject nil response body - CLI returned success with null body.
+		transport.injectResponse(req.RequestID, nil)
+	}()
+
+	_, err = protocol.GetMcpStatus(ctx)
+	if err == nil {
+		t.Fatal("expected error for nil response, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty response") {
+		t.Errorf("expected error to contain 'empty response', got: %v", err)
 	}
 }

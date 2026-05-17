@@ -9,10 +9,6 @@ import (
 	"time"
 )
 
-// =============================================================================
-// Test Functions (primary purpose)
-// =============================================================================
-
 // TestNewToolCreation tests NewTool constructor and McpTool accessors.
 func TestNewToolCreation(t *testing.T) {
 	tests := []struct {
@@ -415,10 +411,6 @@ func TestSdkMcpServerName(t *testing.T) {
 		t.Errorf("Version() = %q, want %q", server.Instance.Version(), "2.5.0")
 	}
 }
-
-// =============================================================================
-// Helper Functions (utilities)
-// =============================================================================
 
 // setupMcpTestContext creates a context with timeout for MCP tests.
 func setupMcpTestContext(t *testing.T, timeout time.Duration) (context.Context, context.CancelFunc) {

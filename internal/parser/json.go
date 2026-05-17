@@ -16,7 +16,6 @@ const (
 )
 
 // Parser handles JSON message parsing with speculative parsing and buffer management.
-// It implements the same speculative parsing strategy as the Python SDK.
 type Parser struct {
 	buffer        strings.Builder
 	maxBufferSize int
@@ -27,6 +26,13 @@ type Parser struct {
 func New() *Parser {
 	return &Parser{
 		maxBufferSize: MaxBufferSize,
+	}
+}
+
+// NewWithSize creates a new JSON parser with a custom maximum buffer size.
+func NewWithSize(maxBufferSize int) *Parser {
+	return &Parser{
+		maxBufferSize: maxBufferSize,
 	}
 }
 
@@ -89,6 +95,8 @@ func (p *Parser) ParseMessage(data map[string]any) (shared.Message, error) {
 		}, nil
 	case shared.MessageTypeStreamEvent:
 		return p.parseStreamEventMessage(data)
+	case shared.MessageTypeRateLimitEvent:
+		return p.parseRateLimitEventMessage(data)
 	default:
 		return nil, shared.NewMessageParseError(
 			fmt.Sprintf("unknown message type: %s", msgType),
@@ -174,7 +182,6 @@ func (p *Parser) parseUserMessage(data map[string]any) (*shared.UserMessage, err
 		parentToolUseID = &ptid
 	}
 
-	// Extract tool_use_result (Issue #98: Python SDK v0.1.22 parity)
 	var toolUseResult map[string]any
 	if tur, ok := data["tool_use_result"].(map[string]any); ok {
 		toolUseResult = tur
@@ -237,17 +244,26 @@ func (p *Parser) parseAssistantMessage(data map[string]any) (*shared.AssistantMe
 		blocks[i] = block
 	}
 
-	// Parse optional error field
+	// Parse optional error field from top-level data, not the nested message object.
+	// Wire format: {"type":"assistant","error":"rate_limit","message":{...}}.
 	var errorPtr *shared.AssistantMessageError
-	if errorStr, ok := messageData["error"].(string); ok {
+	if errorStr, ok := data["error"].(string); ok {
 		errType := shared.AssistantMessageError(errorStr)
 		errorPtr = &errType
 	}
 
+	// parent_tool_use_id is set on assistant messages produced inside a subagent
+	// (Agent/Task tool). Lives at the top-level of the raw event.
+	var parentToolUseID *string
+	if ptid, ok := data["parent_tool_use_id"].(string); ok {
+		parentToolUseID = &ptid
+	}
+
 	return &shared.AssistantMessage{
-		Content: blocks,
-		Model:   model,
-		Error:   errorPtr,
+		Content:         blocks,
+		Model:           model,
+		Error:           errorPtr,
+		ParentToolUseID: parentToolUseID,
 	}, nil
 }
 
@@ -424,6 +440,48 @@ func (p *Parser) parseToolResultBlock(data map[string]any) (shared.ContentBlock,
 		Content:   data["content"],
 		IsError:   isError,
 	}, nil
+}
+
+// parseRateLimitEventMessage parses a rate_limit_event message from raw JSON
+// data. Tolerant on optional fields: only the rate_limit_info object is
+// required; uuid / session_id are best-effort copies because the CLI does
+// not always include them depending on session state.
+func (p *Parser) parseRateLimitEventMessage(data map[string]any) (*shared.RateLimitEventMessage, error) {
+	infoRaw, ok := data["rate_limit_info"].(map[string]any)
+	if !ok {
+		return nil, shared.NewMessageParseError("rate_limit_event missing rate_limit_info field", data)
+	}
+
+	info := shared.RateLimitInfo{}
+	if s, ok := infoRaw["status"].(string); ok {
+		info.Status = s
+	}
+	if f, ok := infoRaw["resetsAt"].(float64); ok {
+		info.ResetsAt = int64(f)
+	}
+	if s, ok := infoRaw["rateLimitType"].(string); ok {
+		info.RateLimitType = s
+	}
+	if s, ok := infoRaw["overageStatus"].(string); ok {
+		info.OverageStatus = s
+	}
+	if f, ok := infoRaw["overageResetsAt"].(float64); ok {
+		info.OverageResetsAt = int64(f)
+	}
+	if b, ok := infoRaw["isUsingOverage"].(bool); ok {
+		info.IsUsingOverage = b
+	}
+
+	msg := &shared.RateLimitEventMessage{
+		RateLimitInfo: info,
+	}
+	if s, ok := data["uuid"].(string); ok {
+		msg.UUID = s
+	}
+	if s, ok := data["session_id"].(string); ok {
+		msg.SessionID = s
+	}
+	return msg, nil
 }
 
 // parseStreamEventMessage parses a stream event message from raw JSON data.

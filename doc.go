@@ -4,8 +4,8 @@
 // - Query() for one-shot requests with automatic cleanup
 // - Client for bidirectional streaming conversations
 //
-// The SDK follows Go-native patterns with goroutines and channels instead of
-// async/await, providing context-first design for cancellation and timeouts.
+// The SDK follows Go-native patterns with goroutines and channels, providing
+// context-first design for cancellation and timeouts.
 //
 // Example usage:
 //
@@ -22,9 +22,6 @@
 //		claudecode.WithSystemPrompt("You are a helpful assistant"),
 //	)
 //	defer client.Close()
-//
-// The SDK provides 100% feature parity with the Python SDK while embracing
-// Go idioms and patterns.
 package claudecode
 
 // Version represents the current version of the Claude Agent SDK for Go.

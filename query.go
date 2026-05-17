@@ -157,14 +157,29 @@ func (qi *queryIterator) start() error {
 }
 
 // createQueryTransport creates a transport for one-shot queries with prompt as CLI argument.
+//
+// If the caller supplied a CLI path via WithCLIPath, that path is used directly
+// and CLI auto-discovery is skipped. This matches the documented behaviour of
+// the option (and the Python SDK's `cli_path` parameter) and lets callers
+// bypass exec.LookPath when, for example, the npm shim on their platform
+// mishandles command-line arguments.
 func createQueryTransport(prompt string, options *Options) (Transport, error) {
-	// Import here to avoid issues - actual imports are at the top of the file
-	// Find Claude CLI binary
-	cliPath, err := cli.FindCLI()
+	cliPath, err := resolveCLIPath(options)
 	if err != nil {
 		return nil, err
 	}
 
 	// Create subprocess transport with prompt as CLI argument
 	return subprocess.NewWithPrompt(cliPath, options, prompt), nil
+}
+
+// resolveCLIPath returns the CLI path the transport should invoke. When
+// options.CLIPath is set and non-empty, it wins over auto-discovery — the
+// caller has explicitly opted out of FindCLI's PATH/well-known-location
+// search.
+func resolveCLIPath(options *Options) (string, error) {
+	if options != nil && options.CLIPath != nil && *options.CLIPath != "" {
+		return *options.CLIPath, nil
+	}
+	return cli.FindCLI()
 }

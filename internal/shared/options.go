@@ -40,6 +40,10 @@ type ToolsPreset struct {
 	Preset string `json:"preset"` // e.g., "claude_code"
 }
 
+// SkillsAll is the sentinel string value for Options.Skills that enables every
+// discovered Skill. Mirrors the Python SDK's skills="all" value.
+const SkillsAll = "all"
+
 // SettingSource represents a settings source location.
 type SettingSource string
 
@@ -109,7 +113,7 @@ type SdkPluginConfig struct {
 }
 
 // OutputFormat specifies the format for structured output.
-// Matches the Messages API structure: {"type": "json_schema", "schema": {...}}
+// Wire format: {"type": "json_schema", "schema": {...}}
 type OutputFormat struct {
 	Type   string         `json:"type"`   // Always "json_schema"
 	Schema map[string]any `json:"schema"` // JSON Schema definition
@@ -183,13 +187,20 @@ type Options struct {
 	ForkSession          bool            `json:"fork_session,omitempty"`
 	SettingSources       []SettingSource `json:"setting_sources,omitempty"`
 
+	// Skills controls which filesystem-discovered Skills are exposed to the model.
+	// Accepts the string "all" (SkillsAll) to enable every discovered Skill, a
+	// []string of Skill names to enable only those, or an empty []string{} to
+	// disable all. When non-nil and SettingSources is unset, SettingSources
+	// defaults to [user, project] so the CLI discovers installed Skills.
+	// Matches the Python SDK's skills option (see _apply_skills_defaults).
+	Skills any `json:"skills,omitempty"`
+
 	// Partial Message Streaming
 	IncludePartialMessages bool `json:"include_partial_messages,omitempty"`
 
-	// File Checkpointing (Issue #32)
 	// EnableFileCheckpointing enables file change tracking for rewind support.
 	// When enabled, files can be rewound to their state at any user message
-	// using Client.RewindFiles(). Matches Python SDK's enable_file_checkpointing.
+	// using Client.RewindFiles().
 	EnableFileCheckpointing bool `json:"enable_file_checkpointing,omitempty"`
 
 	// Agent Definitions
@@ -231,7 +242,6 @@ type Options struct {
 	// If set, takes precedence over DebugWriter for stderr handling.
 	// Each line is stripped of trailing whitespace and empty lines are skipped.
 	// Callback panics are silently recovered to prevent crashing the SDK.
-	// Matches Python SDK's stderr callback behavior.
 	StderrCallback func(string) `json:"-"` // Not serialized
 
 	// CanUseTool is invoked when CLI requests permission to use a tool.
@@ -239,7 +249,6 @@ type Options struct {
 	// Return PermissionResultAllow to permit, PermissionResultDeny to deny.
 	// If nil, all tool requests are denied (secure default).
 	// Callback panics are recovered to prevent crashing the SDK.
-	// Matches Python SDK's can_use_tool callback behavior.
 	// Note: The actual types are defined in internal/control to avoid import cycles.
 	// Use the claudecode package's WithCanUseTool option for type-safe configuration.
 	CanUseTool func(
@@ -279,6 +288,10 @@ type McpStdioServerConfig struct {
 	Command string            `json:"command"`
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
+	// AlwaysLoad, when true, opts the server out of tool-search deferral so
+	// all of its tools are always available without a ToolSearch round-trip.
+	// Requires Claude Code CLI 2.1.121 or later.
+	AlwaysLoad bool `json:"alwaysLoad,omitempty"`
 }
 
 // GetType returns the server type for McpStdioServerConfig.
@@ -291,6 +304,10 @@ type McpSSEServerConfig struct {
 	Type    McpServerType     `json:"type"`
 	URL     string            `json:"url"`
 	Headers map[string]string `json:"headers,omitempty"`
+	// AlwaysLoad, when true, opts the server out of tool-search deferral so
+	// all of its tools are always available without a ToolSearch round-trip.
+	// Requires Claude Code CLI 2.1.121 or later.
+	AlwaysLoad bool `json:"alwaysLoad,omitempty"`
 }
 
 // GetType returns the server type for McpSSEServerConfig.
@@ -303,6 +320,10 @@ type McpHTTPServerConfig struct {
 	Type    McpServerType     `json:"type"`
 	URL     string            `json:"url"`
 	Headers map[string]string `json:"headers,omitempty"`
+	// AlwaysLoad, when true, opts the server out of tool-search deferral so
+	// all of its tools are always available without a ToolSearch round-trip.
+	// Requires Claude Code CLI 2.1.121 or later.
+	AlwaysLoad bool `json:"alwaysLoad,omitempty"`
 }
 
 // GetType returns the server type for McpHTTPServerConfig.
@@ -333,6 +354,10 @@ type McpSdkServerConfig struct {
 	Type     McpServerType `json:"type"`
 	Name     string        `json:"name"`
 	Instance McpServer     `json:"-"` // Excluded from CLI serialization
+	// AlwaysLoad, when true, opts the server out of tool-search deferral so
+	// all of its tools are always available without a ToolSearch round-trip.
+	// Requires Claude Code CLI 2.1.121 or later.
+	AlwaysLoad bool `json:"alwaysLoad,omitempty"`
 }
 
 // GetType returns the server type for McpSdkServerConfig.
@@ -348,7 +373,6 @@ type McpToolDefinition struct {
 }
 
 // McpToolResult represents the result of a tool call.
-// Matches Python SDK's tool result structure for 100% parity.
 type McpToolResult struct {
 	Content []McpContent `json:"content"`
 	IsError bool         `json:"isError,omitempty"`

@@ -42,6 +42,16 @@ control/
 - Timeout handling: Default 60s init timeout, configurable via `WithInitTimeout`
 - Hook registration: `RegisterHook()` returns callback ID for later removal
 - Init error channel: `initErrChan chan error` (buffered, size 1) in Protocol struct; `HandleControlInitErr()` sends non-blocking to unblock `SendControlRequest()` when CLI fails before handshake (e.g., invalid session ID)
+- Constructor pattern: `NewGetMcpStatusRequest()` sets `Subtype: SubtypeGetMcpStatus`; follows same pattern as `NewPermissionResultAllow/Deny`; use constructors for request types with fixed subtype values
+- SubtypeGetMcpStatus = `"mcp_status"` (wire value from Python SDK query.py); included in parity table in `testSubtypeConstants`
+- McpServerConfigType constants: `McpServerConfigTypeStdio/SSE/HTTP/SDK/ClaudeAI` discriminate `McpServerStatusConfig.Type`
+- McpServerStatus conditional fields: `ServerInfo` non-nil only when connected; `Error` non-nil only when failed; `Tools` populated only when connected
+- Hook event count: 10 as of Python SDK PR #545 (added `Notification`, `SubagentStart`, `PermissionRequest` to the 7 from PR #535); const block order in types_hook.go: PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, Stop, SubagentStop, PreCompact, Notification, SubagentStart, PermissionRequest
+- New hook input structs (PR #545): `NotificationHookInput` (Message, Title *string omitempty, NotificationType); `SubagentStartHookInput` (AgentID, AgentType); `PermissionRequestHookInput` (ToolName, ToolInput map[string]any, PermissionSuggestions []any omitempty) - intentionally no agent_id/agent_type until Phase2 item #13 (Python PR #628)
+- New hook output structs (PR #545): `NotificationHookSpecificOutput`, `SubagentStartHookSpecificOutput` (both: HookEventName + AdditionalContext *string omitempty); `PermissionRequestHookSpecificOutput` (HookEventName + Decision map[string]any - required, no omitempty)
+- Missing fields added (PR #545): `ToolUseID string` on PreToolUseHookInput and PostToolUseHookInput; `AgentID`, `AgentTranscriptPath`, `AgentType` as flat required string fields on SubagentStopHookInput (NOT via mixin - mixin is a separate construct landing in PR #628); `AdditionalContext *string` on PreToolUseHookSpecificOutput; `UpdatedMCPToolOutput any` (Go acronym casing, wire tag `updatedMCPToolOutput`) on PostToolUseHookSpecificOutput
+- getAnySlice helper in hooks.go: mirrors getMap; returns nil when key absent (Python NotRequired semantics); use for []any typed fields
+- PostToolUseFailureHookInput fields: `ToolUseID string`, `Error string`, `IsInterrupt *bool json:"is_interrupt,omitempty"`; nil `IsInterrupt` maps to key absent in JSON (Python `NotRequired[bool]`); `PostToolUseFailureHookSpecificOutput` is structurally identical to `PostToolUseHookSpecificOutput` (only `HookEventName` literal differs), both have `AdditionalContext *string` (omitempty); `_SubagentContextMixin` fields (`agent_id`/`agent_type`) still deferred to Phase2 item #13 (Python PR #628)
 
 <!-- END AUTO-MANAGED -->
 

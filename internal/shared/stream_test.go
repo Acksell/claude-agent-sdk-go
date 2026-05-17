@@ -73,8 +73,6 @@ func (m *mockIterator) Close() error {
 	return nil
 }
 
-// Helper functions following established patterns
-
 // assertStreamMessageJSON verifies JSON marshaling behavior
 func assertStreamMessageJSON(t *testing.T, msg *StreamMessage, expected map[string]any) {
 	t.Helper()

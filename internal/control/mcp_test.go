@@ -9,10 +9,6 @@ import (
 	"time"
 )
 
-// =============================================================================
-// MCP Message Handler Tests (Issue #7)
-// =============================================================================
-
 // TestMcpMessageRouting tests the MCP message routing logic.
 func TestMcpMessageRouting(t *testing.T) {
 	tests := []struct {
@@ -437,10 +433,6 @@ func TestWithSdkMcpServers(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// Mock Types
-// =============================================================================
-
 // mockMcpServer implements McpServer for testing.
 type mockMcpServer struct {
 	mu         sync.RWMutex
@@ -522,10 +514,6 @@ func (m *mcpMockTransport) Read(_ context.Context) <-chan []byte {
 func (m *mcpMockTransport) Close() error {
 	return nil
 }
-
-// =============================================================================
-// Helper Functions
-// =============================================================================
 
 // setupMcpTestContext creates a context with timeout for MCP tests.
 func setupMcpTestContext(t *testing.T, timeout time.Duration) (context.Context, context.CancelFunc) {

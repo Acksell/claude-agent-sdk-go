@@ -377,8 +377,6 @@ func validateToolResultBlock(t *testing.T, block ContentBlock) {
 	}
 }
 
-// Issue #24: Test UUID and ParentToolUseID helper methods
-
 // TestUserMessageGetUUID tests the GetUUID helper method
 func TestUserMessageGetUUID(t *testing.T) {
 	tests := []struct {
@@ -459,12 +457,60 @@ func TestUserMessageJSONMarshalingWithOptionalFields(t *testing.T) {
 	}
 }
 
+// TestAssistantMessageGetParentToolUseID tests the GetParentToolUseID helper method
+func TestAssistantMessageGetParentToolUseID(t *testing.T) {
+	tests := []struct {
+		name     string
+		id       *string
+		expected string
+	}{
+		{"nil returns empty", nil, ""},
+		{"non-nil returns value", strPtr("tool-abc"), "tool-abc"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := &AssistantMessage{ParentToolUseID: tt.id}
+			if got := msg.GetParentToolUseID(); got != tt.expected {
+				t.Errorf("GetParentToolUseID() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestAssistantMessageJSONMarshalingWithParentToolUseID tests JSON marshaling of ParentToolUseID
+func TestAssistantMessageJSONMarshalingWithParentToolUseID(t *testing.T) {
+	parentToolUseID := "tool-abc"
+	asstMsg := &AssistantMessage{
+		Content:         []ContentBlock{},
+		Model:           "claude-3-sonnet",
+		ParentToolUseID: &parentToolUseID,
+	}
+
+	jsonData, err := json.Marshal(asstMsg)
+	if err != nil {
+		t.Fatalf("Failed to marshal AssistantMessage: %v", err)
+	}
+	assertJSONField(t, jsonData, "type", MessageTypeAssistant)
+	assertJSONField(t, jsonData, "parent_tool_use_id", "tool-abc")
+
+	asstMsgNoOptional := &AssistantMessage{Content: []ContentBlock{}, Model: "claude-3-sonnet"}
+	jsonDataNoOptional, err := json.Marshal(asstMsgNoOptional)
+	if err != nil {
+		t.Fatalf("Failed to marshal AssistantMessage: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(jsonDataNoOptional, &result); err != nil {
+		t.Fatalf("Failed to unmarshal JSON: %v", err)
+	}
+	if _, exists := result["parent_tool_use_id"]; exists {
+		t.Error("Expected 'parent_tool_use_id' field to be omitted when nil")
+	}
+}
+
 // strPtr is a helper to create a pointer to a string
 func strPtr(s string) *string {
 	return &s
 }
-
-// Issue #23: Test AssistantMessage.Error field and helper methods
 
 // TestAssistantMessageWithError tests AssistantMessage with the Error field set
 func TestAssistantMessageWithError(t *testing.T) {
@@ -581,8 +627,6 @@ func TestAssistantMessageErrorJSONMarshaling(t *testing.T) {
 		t.Error("Expected 'error' field to be omitted when nil")
 	}
 }
-
-// Issue #98: Test ToolUseResult accessor methods (Python SDK v0.1.22 parity)
 
 // TestUserMessage_ToolUseResult tests ToolUseResult accessor methods
 func TestUserMessage_ToolUseResult(t *testing.T) {

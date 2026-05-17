@@ -12,8 +12,7 @@ import (
 	"github.com/severity1/claude-agent-sdk-go"
 )
 
-// TestIntegrationCoreQueries tests core query functionality end-to-end
-// Covers T164: Simple Query Response, T165: Query with Tools, T166: Streaming Client, T167: Interrupt
+// TestIntegrationCoreQueries tests core query functionality end-to-end.
 func TestIntegrationCoreQueries(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -484,7 +483,6 @@ type integrationResourceTracker struct {
 	connections       int
 }
 
-// Transport interface implementation following established patterns
 func (i *integrationMockTransport) Connect(ctx context.Context) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -607,7 +605,6 @@ func (i *integrationMockTransport) Close() error {
 		return nil
 	}
 
-	// Set state properly following client_test.go patterns
 	i.connected = false
 	i.closed = true
 
@@ -629,7 +626,6 @@ func (i *integrationMockTransport) Close() error {
 		i.errChan = nil
 	}
 
-	// Proper resource cleanup following established patterns
 	if i.resourceTracker != nil {
 		i.resourceTracker.mu.Lock()
 		// Clean up all tracked resources as expected

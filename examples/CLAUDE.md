@@ -23,7 +23,7 @@ examples/
 ├── 09_context_manager/      # WithClient pattern
 ├── 10_session_management/   # Session isolation
 ├── 11_permission_callback/  # Tool permission control
-├── 12_hooks/                # Lifecycle hooks
+├── 12_hooks/                # Lifecycle hooks; PreToolUse logging, command blocking, PostToolUse context injection, PostToolUseFailure recovery via WithHook(), Notification observation via WithHook()
 ├── 13_file_checkpointing/   # File rewind capabilities
 ├── 14_sdk_mcp_server/       # In-process custom tools
 ├── 15_programmatic_subagents/ # Agent definitions
@@ -44,6 +44,10 @@ examples/
 - All examples have a `main.go` with runnable code
 - Run with `go run main.go` from the example directory
 - Prerequisites noted in README.md (e.g., MCP servers need `uvx`)
+- Use `WithClient` + `client.Query` + `client.ReceiveMessages(ctx)` as the standard streaming pattern
+- Use `WithHook(eventName, toolFilter, callback)` for hook events without convenience helpers (PostToolUseFailure, Notification, SubagentStart, PermissionRequest); `WithPreToolUseHook` / `WithPostToolUseHook` are the only convenience helpers
+- Use a local `ptrTo[T any]` helper (`func ptrTo[T any](v T) *T { return &v }`) for constructing `*string` fields like `AdditionalContext`
+- Use `toolUseID *string` parameter for correlating pre/post hook calls (e.g., timing via a map keyed by tool use ID); always guard with `if toolUseID == nil` before dereferencing
 
 <!-- END AUTO-MANAGED -->
 

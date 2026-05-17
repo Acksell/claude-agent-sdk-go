@@ -41,7 +41,7 @@ func testBasicLifecycle(ctx context.Context, t *testing.T) {
 	t.Helper()
 	transport := newClientMockTransport()
 
-	// Test defer-based resource management (Go equivalent of Python context manager)
+	// Test defer-based resource management.
 	func() {
 		client := setupClientForTest(t, transport)
 		defer disconnectClientSafely(t, client)
@@ -527,6 +527,30 @@ func TestClientResponseIterator(t *testing.T) {
 	}
 }
 
+// TestClientReceiveResponseNotConnected tests that ReceiveResponse returns a usable
+// (non-nil) iterator even when the client is not connected.
+func TestClientReceiveResponseNotConnected(t *testing.T) {
+	ctx, cancel := setupClientTestContext(t, 5*time.Second)
+	defer cancel()
+
+	transport := newClientMockTransport()
+	client := setupClientForTest(t, transport)
+	// Intentionally do NOT connect
+
+	iter := client.ReceiveResponse(ctx)
+	if iter == nil {
+		t.Fatal("ReceiveResponse returned nil on disconnected client; expected a closed iterator")
+	}
+
+	msg, err := iter.Next(ctx)
+	if err != ErrNoMoreMessages {
+		t.Errorf("Expected ErrNoMoreMessages from closed iterator, got: %v", err)
+	}
+	if msg != nil {
+		t.Errorf("Expected nil message from closed iterator, got: %v", msg)
+	}
+}
+
 // TestClientInterrupt tests interrupt functionality during operations
 // Covers T139: Client Interrupt Functionality
 func TestClientInterrupt(t *testing.T) {
@@ -798,6 +822,47 @@ func TestClientAsyncErrorHandling(t *testing.T) {
 	assertClientMessageCount(t, transport, 1)
 }
 
+// TestClientQueryStreamSendError tests that QueryStream propagates send errors
+// to the ReceiveResponse iterator rather than silently dropping them (C3).
+func TestClientQueryStreamSendError(t *testing.T) {
+	sendErr := fmt.Errorf("send failed")
+	transport := newClientMockTransportWithOptions(WithClientSendError(sendErr))
+	client := setupClientForTest(t, transport)
+	defer disconnectClientSafely(t, client)
+
+	ctx, cancel := setupClientTestContext(t, 5*time.Second)
+	defer cancel()
+
+	connectClientSafely(ctx, t, client)
+
+	iter := client.ReceiveResponse(ctx)
+	if iter == nil {
+		t.Fatal("Expected non-nil iterator")
+	}
+
+	messages := make(chan StreamMessage, 1)
+	messages <- StreamMessage{
+		Type:    "user",
+		Message: &UserMessage{Content: "hello"},
+	}
+
+	if err := client.QueryStream(ctx, messages); err != nil {
+		t.Fatalf("QueryStream returned unexpected synchronous error: %v", err)
+	}
+
+	// The send error must be propagated to the iterator, not silently dropped.
+	shortCtx, shortCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer shortCancel()
+
+	_, iterErr := iter.Next(shortCtx)
+	if iterErr == nil {
+		t.Fatal("Expected error from iterator after send failure, got nil")
+	}
+	if !strings.Contains(iterErr.Error(), "send failed") {
+		t.Errorf("Expected error containing 'send failed', got: %v", iterErr)
+	}
+}
+
 // TestClientResponseSequencing tests pre-configured response sequences
 // Covers T137: Client Message Reception + T138: Client Response Iterator + T147: Client Message Ordering
 func TestClientResponseSequencing(t *testing.T) {
@@ -1008,7 +1073,6 @@ func TestClientIteratorClose(t *testing.T) {
 	}
 }
 
-// Mock Transport Implementation - simplified following options_test.go patterns
 type clientMockTransport struct {
 	mu           sync.Mutex
 	connected    bool
@@ -1029,6 +1093,8 @@ type clientMockTransport struct {
 	setModelError          error
 	setPermissionModeError error
 	rewindFilesError       error
+	getMcpStatusError      error
+	getMcpStatusResponse   *McpStatusResponse
 }
 
 func (c *clientMockTransport) Connect(ctx context.Context) error {
@@ -1196,7 +1262,7 @@ func (c *clientMockTransport) SetModel(_ context.Context, _ *string) error {
 	return nil
 }
 
-func (c *clientMockTransport) SetPermissionMode(_ context.Context, _ string) error {
+func (c *clientMockTransport) SetPermissionMode(_ context.Context, _ PermissionMode) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.setPermissionModeError != nil {
@@ -1212,6 +1278,18 @@ func (c *clientMockTransport) RewindFiles(_ context.Context, _ string) error {
 		return c.rewindFilesError
 	}
 	return nil
+}
+
+func (c *clientMockTransport) GetMcpStatus(_ context.Context) (*McpStatusResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.getMcpStatusError != nil {
+		return nil, c.getMcpStatusError
+	}
+	if c.getMcpStatusResponse != nil {
+		return c.getMcpStatusResponse, nil
+	}
+	return &McpStatusResponse{McpServers: []McpServerStatus{}}, nil
 }
 
 // Streamlined Mock Transport Options - reduced from 11 to 6 essential functions
@@ -1247,6 +1325,14 @@ func WithClientSetPermissionModeError(err error) ClientMockTransportOption {
 
 func WithClientRewindFilesError(err error) ClientMockTransportOption {
 	return func(t *clientMockTransport) { t.rewindFilesError = err }
+}
+
+func WithClientGetMcpStatusError(err error) ClientMockTransportOption {
+	return func(t *clientMockTransport) { t.getMcpStatusError = err }
+}
+
+func WithClientGetMcpStatusResponse(resp *McpStatusResponse) ClientMockTransportOption {
+	return func(t *clientMockTransport) { t.getMcpStatusResponse = resp }
 }
 
 // Factory Functions - streamlined creation methods
@@ -1568,8 +1654,8 @@ func verifyIteratorClose(t *testing.T, client Client, _ *clientMockTransport, te
 	}
 }
 
-// TestClientContextManager tests Go-idiomatic context manager pattern following Python SDK parity
-// Covers the single critical improvement: automatic resource lifecycle management
+// TestClientContextManager tests automatic resource lifecycle management
+// via the Go-idiomatic context manager pattern.
 func TestClientContextManager(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -1923,7 +2009,7 @@ func TestClientPythonSDKCompatibility(t *testing.T) {
 		t.Fatal("ReceiveResponse returned nil iterator")
 	}
 
-	// Test that iterator can be closed immediately (following existing test patterns)
+	// Test that iterator can be closed immediately.
 	err = iter.Close()
 	assertNoError(t, err)
 }
@@ -2127,8 +2213,7 @@ func TestClientIteratorNextErrorPaths(t *testing.T) {
 	}
 }
 
-// ===== NEW CLEAN API TESTS =====
-// These tests are for the new clean Query API without variadic parameters
+// Tests for the Query API without variadic parameters.
 
 func TestClientQueryDefaultSession(t *testing.T) {
 	ctx, cancel := setupClientTestContext(t, 5*time.Second)
@@ -2330,8 +2415,7 @@ func TestClientQueryNotConnectedError(t *testing.T) {
 	}
 }
 
-// TestGetServerInfo tests the GetServerInfo method for diagnostic information retrieval
-// Covers Issue #13: Add GetServerInfo Method for Diagnostics
+// TestGetServerInfo tests the GetServerInfo method for diagnostic information retrieval.
 func TestGetServerInfo(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -2522,10 +2606,6 @@ func TestGetServerInfoConcurrent(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// Dynamic Control Methods Tests (SetModel, SetPermissionMode) - Issues #51, #52
-// =============================================================================
-
 func TestClientDynamicControl(t *testing.T) {
 	t.Run("set_model", testClientSetModel)
 	t.Run("set_permission_mode", testClientSetPermissionMode)
@@ -2711,10 +2791,6 @@ func testClientSetPermissionModeTransportError(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// RewindFiles Tests (Issue #32)
-// =============================================================================
-
 func TestClientRewindFiles(t *testing.T) {
 	t.Run("success", testClientRewindFilesSuccess)
 	t.Run("not_connected", testClientRewindFilesNotConnected)
@@ -2799,6 +2875,121 @@ func testClientRewindFilesTransportError(t *testing.T) {
 		t.Fatal("expected error from transport, got nil")
 	}
 	if !strings.Contains(err.Error(), "transport rewind files error") {
+		t.Errorf("expected transport error, got: %v", err)
+	}
+}
+
+// TestClientGetMcpStatus tests GetMcpStatus delegation through the client layer.
+func TestClientGetMcpStatus(t *testing.T) {
+	t.Run("success", testClientGetMcpStatusSuccess)
+	t.Run("not_connected", testClientGetMcpStatusNotConnected)
+	t.Run("context_cancelled", testClientGetMcpStatusContextCancelled)
+	t.Run("transport_error", testClientGetMcpStatusTransportError)
+}
+
+func testClientGetMcpStatusSuccess(t *testing.T) {
+	t.Helper()
+
+	ctx, cancel := setupClientTestContext(t, 5*time.Second)
+	defer cancel()
+
+	serverName := "test-server"
+	scope := "local"
+	resp := &McpStatusResponse{
+		McpServers: []McpServerStatus{
+			{
+				Name:   serverName,
+				Status: McpServerConnectionStatusConnected,
+				Scope:  &scope,
+			},
+		},
+	}
+	transport := newClientMockTransportWithOptions(
+		WithClientGetMcpStatusResponse(resp),
+	)
+	client := setupClientForTest(t, transport)
+	defer disconnectClientSafely(t, client)
+
+	connectClientSafely(ctx, t, client)
+
+	got, err := client.GetMcpStatus(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if len(got.McpServers) != 1 {
+		t.Fatalf("expected 1 server, got %d", len(got.McpServers))
+	}
+	if got.McpServers[0].Name != serverName {
+		t.Errorf("expected server name %q, got %q", serverName, got.McpServers[0].Name)
+	}
+	if got.McpServers[0].Status != McpServerConnectionStatusConnected {
+		t.Errorf("expected status connected, got %q", got.McpServers[0].Status)
+	}
+}
+
+func testClientGetMcpStatusNotConnected(t *testing.T) {
+	t.Helper()
+
+	ctx, cancel := setupClientTestContext(t, 5*time.Second)
+	defer cancel()
+
+	transport := newClientMockTransport()
+	client := setupClientForTest(t, transport)
+	defer disconnectClientSafely(t, client)
+
+	_, err := client.GetMcpStatus(ctx)
+
+	if err == nil {
+		t.Fatal("expected error when not connected, got nil")
+	}
+	if !strings.Contains(err.Error(), "not connected") {
+		t.Errorf("expected 'not connected' error, got: %v", err)
+	}
+}
+
+func testClientGetMcpStatusContextCancelled(t *testing.T) {
+	t.Helper()
+
+	ctx, cancel := setupClientTestContext(t, 5*time.Second)
+	transport := newClientMockTransport()
+	client := setupClientForTest(t, transport)
+	defer disconnectClientSafely(t, client)
+
+	connectClientSafely(ctx, t, client)
+
+	cancel()
+
+	_, err := client.GetMcpStatus(ctx)
+
+	if err == nil {
+		t.Fatal("expected error when context cancelled, got nil")
+	}
+}
+
+func testClientGetMcpStatusTransportError(t *testing.T) {
+	t.Helper()
+
+	ctx, cancel := setupClientTestContext(t, 5*time.Second)
+	defer cancel()
+
+	expectedErr := errors.New("transport mcp status error")
+	transport := newClientMockTransportWithOptions(
+		WithClientGetMcpStatusError(expectedErr),
+	)
+	client := setupClientForTest(t, transport)
+	defer disconnectClientSafely(t, client)
+
+	connectClientSafely(ctx, t, client)
+
+	_, err := client.GetMcpStatus(ctx)
+
+	if err == nil {
+		t.Fatal("expected error from transport, got nil")
+	}
+	if !strings.Contains(err.Error(), "transport mcp status error") {
 		t.Errorf("expected transport error, got: %v", err)
 	}
 }

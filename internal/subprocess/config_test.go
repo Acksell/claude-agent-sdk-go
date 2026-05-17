@@ -341,6 +341,95 @@ func TestTransportMcpServerConfiguration(t *testing.T) {
 			},
 		},
 		{
+			name: "stdio_alwaysLoad_propagates_to_config_file",
+			setup: func() *Transport {
+				mcpServers := map[string]shared.McpServerConfig{
+					"always-loaded": &shared.McpStdioServerConfig{
+						Type:       shared.McpServerTypeStdio,
+						Command:    "node",
+						AlwaysLoad: true,
+					},
+					"deferred": &shared.McpStdioServerConfig{
+						Type:    shared.McpServerTypeStdio,
+						Command: "node",
+					},
+				}
+				options := &shared.Options{McpServers: mcpServers}
+				return New(newTransportMockCLI(), options, false, "sdk-go")
+			},
+			validate: func(t *testing.T, transport *Transport) {
+				t.Helper()
+				if transport.mcpConfigFile == nil {
+					t.Fatal("Expected MCP config file to be generated")
+				}
+				configData, err := os.ReadFile(transport.mcpConfigFile.Name())
+				if err != nil {
+					t.Fatalf("Failed to read MCP config file: %v", err)
+				}
+				var config map[string]interface{}
+				if err := json.Unmarshal(configData, &config); err != nil {
+					t.Fatalf("MCP config is not valid JSON: %v", err)
+				}
+				servers := config["mcpServers"].(map[string]interface{})
+
+				always := servers["always-loaded"].(map[string]interface{})
+				if always["alwaysLoad"] != true {
+					t.Errorf("Expected alwaysLoad=true on always-loaded server, got %v", always["alwaysLoad"])
+				}
+
+				deferred := servers["deferred"].(map[string]interface{})
+				if _, present := deferred["alwaysLoad"]; present {
+					t.Errorf("Expected alwaysLoad to be omitted when false, got %v", deferred["alwaysLoad"])
+				}
+			},
+		},
+		{
+			name: "sdk_alwaysLoad_propagates_to_config_file",
+			setup: func() *Transport {
+				mcpServers := map[string]shared.McpServerConfig{
+					"sdk-server": &shared.McpSdkServerConfig{
+						Type:       shared.McpServerTypeSdk,
+						Name:       "sdk-server",
+						AlwaysLoad: true,
+					},
+					"sdk-deferred": &shared.McpSdkServerConfig{
+						Type: shared.McpServerTypeSdk,
+						Name: "sdk-deferred",
+					},
+				}
+				options := &shared.Options{McpServers: mcpServers}
+				return New(newTransportMockCLI(), options, false, "sdk-go")
+			},
+			validate: func(t *testing.T, transport *Transport) {
+				t.Helper()
+				if transport.mcpConfigFile == nil {
+					t.Fatal("Expected MCP config file to be generated")
+				}
+				configData, err := os.ReadFile(transport.mcpConfigFile.Name())
+				if err != nil {
+					t.Fatalf("Failed to read MCP config file: %v", err)
+				}
+				var config map[string]interface{}
+				if err := json.Unmarshal(configData, &config); err != nil {
+					t.Fatalf("MCP config is not valid JSON: %v", err)
+				}
+				servers := config["mcpServers"].(map[string]interface{})
+
+				always := servers["sdk-server"].(map[string]interface{})
+				if always["alwaysLoad"] != true {
+					t.Errorf("Expected alwaysLoad=true on sdk-server, got %v", always["alwaysLoad"])
+				}
+				if always["type"] != string(shared.McpServerTypeSdk) {
+					t.Errorf("Expected type=%q, got %v", shared.McpServerTypeSdk, always["type"])
+				}
+
+				deferred := servers["sdk-deferred"].(map[string]interface{})
+				if _, present := deferred["alwaysLoad"]; present {
+					t.Errorf("Expected alwaysLoad to be omitted when false, got %v", deferred["alwaysLoad"])
+				}
+			},
+		},
+		{
 			name: "mcp_config_added_to_extra_args",
 			setup: func() *Transport {
 				mcpServers := map[string]shared.McpServerConfig{

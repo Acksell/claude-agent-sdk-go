@@ -11,7 +11,7 @@ import (
 	"github.com/severity1/claude-agent-sdk-go/internal/shared"
 )
 
-// TestFormatInitError tests the error message formatting for early init failures (Issue #110)
+// TestFormatInitError tests the error message formatting for early init failures.
 func TestFormatInitError(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -159,7 +159,7 @@ func TestTransportHandleStdoutErrorPaths(t *testing.T) {
 	})
 }
 
-// TestStderrCallbackHandling tests stderr callback processing (Issue #53)
+// TestStderrCallbackHandling tests stderr callback processing.
 func TestStderrCallbackHandling(t *testing.T) {
 	tests := []struct {
 		name           string

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 )
@@ -38,6 +39,8 @@ type Protocol struct {
 
 	// State
 	initialized  bool
+	initOnce     sync.Once
+	initErr      error
 	initResponse *InitializeResponse
 	initErrChan  chan error
 	closed       bool
@@ -46,16 +49,16 @@ type Protocol struct {
 	// Configuration
 	initTimeout time.Duration
 
-	// Permission callback (Issue #8)
+	// Permission callback
 	canUseToolCallback CanUseToolCallback
 
-	// Hook callbacks (Issue #9)
+	// Hook callbacks
 	hooks            map[HookEvent][]HookMatcher
 	hookCallbacks    map[string]HookCallback
 	hookCallbacksMu  sync.RWMutex
 	nextHookCallback int64
 
-	// SDK MCP servers for in-process tool handling (Issue #7)
+	// SDK MCP servers for in-process tool handling
 	sdkMcpServers map[string]McpServer
 
 	// Background goroutine management
@@ -161,13 +164,13 @@ func (p *Protocol) readLoop() {
 			// Parse the incoming message
 			var msg map[string]any
 			if err := json.Unmarshal(data, &msg); err != nil {
-				// Log parse error but continue
+				fmt.Fprintf(os.Stderr, "claude-agent-sdk: failed to parse control message: %v\n", err)
 				continue
 			}
 
 			// Route the message
 			if err := p.HandleIncomingMessage(p.ctx, msg); err != nil {
-				// Log routing error but continue
+				fmt.Fprintf(os.Stderr, "claude-agent-sdk: failed to route control message: %v\n", err)
 				continue
 			}
 		}
@@ -342,19 +345,22 @@ func (p *Protocol) handleControlResponse(_ context.Context, msg map[string]any) 
 	select {
 	case responseChan <- response:
 	default:
-		// Channel full or closed - ignore
+		fmt.Fprintf(os.Stderr, "claude-agent-sdk: response channel full or closed, dropping response for request %s\n", requestID)
 	}
 
 	return nil
 }
 
 // forwardToStream sends a message to the regular message stream.
+// Returns an error if the buffer is full rather than blocking readLoop.
 func (p *Protocol) forwardToStream(ctx context.Context, msg map[string]any) error {
 	select {
 	case p.messageStream <- msg:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	default:
+		return fmt.Errorf("message stream buffer full, dropping message")
 	}
 }
 
@@ -380,51 +386,52 @@ func (p *Protocol) sendErrorResponse(ctx context.Context, requestID string, errM
 
 // Initialize performs the control protocol handshake with the CLI.
 // This must be called in streaming mode before other control operations.
-// The result is cached - subsequent calls return the cached response.
+// The result is cached via sync.Once - concurrent and subsequent calls return the cached
+// response. If the first call fails, the error is also cached permanently; subsequent
+// calls return the same error and will not retry even with a fresh context.
 func (p *Protocol) Initialize(ctx context.Context) (*InitializeResponse, error) {
-	p.mu.Lock()
-	if p.initialized {
-		resp := p.initResponse
-		p.mu.Unlock()
-		return resp, nil
-	}
-	p.mu.Unlock()
+	p.initOnce.Do(func() {
+		// Build initialize request with hooks configuration
+		initReq := InitializeRequest{
+			Subtype: SubtypeInitialize,
+		}
 
-	// Build initialize request with hooks configuration
-	initReq := InitializeRequest{
-		Subtype: SubtypeInitialize,
-	}
+		// Generate hook registrations and build hooks config
+		if p.hooks != nil {
+			initReq.Hooks = p.buildHooksConfig()
+		}
 
-	// Generate hook registrations and build hooks config
-	if p.hooks != nil {
-		initReq.Hooks = p.buildHooksConfig()
-	}
+		// Send initialize request
+		result, err := p.SendControlRequest(ctx, initReq, p.initTimeout)
+		if err != nil {
+			p.initErr = fmt.Errorf("initialize failed: %w", err)
+			return
+		}
 
-	// Send initialize request
-	result, err := p.SendControlRequest(ctx, initReq, p.initTimeout)
-
-	if err != nil {
-		return nil, fmt.Errorf("initialize failed: %w", err)
-	}
-
-	// Parse response
-	var initResp InitializeResponse
-	if resultMap, ok := result.(map[string]any); ok {
-		if cmds, ok := resultMap["supported_commands"].([]any); ok {
-			for _, cmd := range cmds {
-				if cmdStr, ok := cmd.(string); ok {
-					initResp.SupportedCommands = append(initResp.SupportedCommands, cmdStr)
+		// Parse response
+		var initResp InitializeResponse
+		if resultMap, ok := result.(map[string]any); ok {
+			if cmds, ok := resultMap["supported_commands"].([]any); ok {
+				for _, cmd := range cmds {
+					if cmdStr, ok := cmd.(string); ok {
+						initResp.SupportedCommands = append(initResp.SupportedCommands, cmdStr)
+					}
 				}
 			}
 		}
-	}
+
+		p.mu.Lock()
+		p.initialized = true
+		p.initResponse = &initResp
+		p.mu.Unlock()
+	})
 
 	p.mu.Lock()
-	p.initialized = true
-	p.initResponse = &initResp
+	resp := p.initResponse
+	err := p.initErr
 	p.mu.Unlock()
 
-	return &initResp, nil
+	return resp, err
 }
 
 // Interrupt sends an interrupt control request to the CLI.
@@ -460,15 +467,33 @@ func (p *Protocol) SetPermissionMode(ctx context.Context, mode string) error {
 	return err
 }
 
+// GetMcpStatus returns the connection status of all configured MCP servers.
+func (p *Protocol) GetMcpStatus(ctx context.Context) (*McpStatusResponse, error) {
+	result, err := p.SendControlRequest(ctx, NewGetMcpStatusRequest(), 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, fmt.Errorf("mcp status response: CLI returned empty response")
+	}
+	// SendControlRequest returns Response.Response as any (map[string]any from JSON).
+	// Re-marshal + unmarshal into typed struct - necessary because SendControlRequest
+	// returns any and there is no generic typed variant.
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("marshal mcp status response: %w", err)
+	}
+	var resp McpStatusResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal mcp status response: %w", err)
+	}
+	return &resp, nil
+}
+
 // RewindFiles reverts tracked files to their state at a specific user message.
 // The userMessageID should be the UUID from a UserMessage received during the session.
 // Requires EnableFileCheckpointing to be set when creating the client.
 // Returns error if the control request fails or times out.
-//
-// This method matches Python SDK's rewind_files behavior exactly:
-// - Uses "rewind_files" subtype
-// - Sends user_message_id in the request
-// - Uses standard 5-second timeout
 func (p *Protocol) RewindFiles(ctx context.Context, userMessageID string) error {
 	_, err := p.SendControlRequest(ctx, RewindFilesRequest{
 		Subtype:       SubtypeRewindFiles,
