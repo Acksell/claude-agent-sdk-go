@@ -910,6 +910,15 @@ func TestSessionManagementFlagsSupport(t *testing.T) {
 			},
 			validate: validateForkSessionWithResume,
 		},
+		{
+			name: "resume_session_at_with_resume",
+			options: &shared.Options{
+				Resume:          stringPtr("session-123"),
+				ResumeSessionAt: stringPtr("msg-uuid-abc"),
+				SettingSources:  []shared.SettingSource{},
+			},
+			validate: validateResumeSessionAt,
+		},
 	}
 
 	for _, test := range tests {
@@ -955,6 +964,12 @@ func validateForkSessionWithResume(t *testing.T, cmd []string) {
 	assertContainsArgs(t, cmd, "--resume", "session-123")
 	assertContainsArg(t, cmd, "--fork-session")
 	assertContainsArgs(t, cmd, "--setting-sources", "user")
+}
+
+func validateResumeSessionAt(t *testing.T, cmd []string) {
+	t.Helper()
+	assertContainsArgs(t, cmd, "--resume", "session-123")
+	assertContainsArgs(t, cmd, "--resume-session-at", "msg-uuid-abc")
 }
 
 // TestPluginsFlagSupport tests --plugin-dir CLI flag generation

@@ -200,6 +200,7 @@ type Options struct {
 	// Session & State Management
 	ContinueConversation bool            `json:"continue_conversation,omitempty"`
 	Resume               *string         `json:"resume,omitempty"`
+	ResumeSessionAt      *string         `json:"resume_session_at,omitempty"`
 	MaxTurns             int             `json:"max_turns,omitempty"`
 	Settings             *string         `json:"settings,omitempty"`
 	ForkSession          bool            `json:"fork_session,omitempty"`

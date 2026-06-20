@@ -163,6 +163,20 @@ func TestSessionContinuationOptions(t *testing.T) {
 	assertOptionsContinueConversation(t, resumeOnlyOptions, false) // default
 }
 
+func TestWithResumeSessionAtOption(t *testing.T) {
+	const uuid = "msg-uuid-abc"
+
+	options := NewOptions(WithResume("session-123"), WithResumeSessionAt(uuid))
+	if options.ResumeSessionAt == nil || *options.ResumeSessionAt != uuid {
+		t.Errorf("Expected ResumeSessionAt = %q, got %v", uuid, options.ResumeSessionAt)
+	}
+
+	// Unset by default.
+	if def := NewOptions(); def.ResumeSessionAt != nil {
+		t.Errorf("Expected ResumeSessionAt nil by default, got %q", *def.ResumeSessionAt)
+	}
+}
+
 func TestModelSpecificationOptions(t *testing.T) {
 	// Test model and permission_prompt_tool_name
 	model := "claude-3-5-sonnet-20241022"

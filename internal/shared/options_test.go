@@ -54,6 +54,7 @@ func TestOptionsDefaults(t *testing.T) {
 		{"PermissionMode", func() bool { return options.PermissionMode == nil }},
 		{"PermissionPromptToolName", func() bool { return options.PermissionPromptToolName == nil }},
 		{"Resume", func() bool { return options.Resume == nil }},
+		{"ResumeSessionAt", func() bool { return options.ResumeSessionAt == nil }},
 		{"Settings", func() bool { return options.Settings == nil }},
 		{"Cwd", func() bool { return options.Cwd == nil }},
 	}

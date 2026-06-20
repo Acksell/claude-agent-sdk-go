@@ -255,6 +255,24 @@ func WithResume(sessionID string) Option {
 	}
 }
 
+// WithResumeSessionAt truncates the resumed conversation at a specific message.
+// When resuming (see WithResume), only messages up to and including the message
+// with messageUUID are loaded into the active branch; later messages are dropped.
+// The CLI does this by branching the transcript — the dropped messages remain in
+// the JSONL as an orphaned branch, and the active branch is the one ending at
+// messageUUID. Pass the UUID of the assistant message that should remain last;
+// this maps to the CLI's "--resume-session-at <message id>" flag ("only [keep]
+// messages up to and including the assistant message with <message.id>").
+//
+// Requires WithResume — the CLI rejects --resume-session-at without --resume.
+// The referenced message must still exist in the transcript (do not physically
+// truncate the JSONL and then pass a UUID the CLI can no longer find).
+func WithResumeSessionAt(messageUUID string) Option {
+	return func(o *Options) {
+		o.ResumeSessionAt = &messageUUID
+	}
+}
+
 // WithCwd sets the working directory.
 func WithCwd(cwd string) Option {
 	return func(o *Options) {
